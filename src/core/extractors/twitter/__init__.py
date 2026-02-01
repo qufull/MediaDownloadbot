@@ -1,0 +1,1 @@
+from .service import TwitterExtractor, _ResultAdapter

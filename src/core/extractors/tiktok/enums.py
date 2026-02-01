@@ -1,0 +1,53 @@
+from enum import Enum
+
+
+class ContentType(Enum):
+    """Перечисление, представляющее различные типы контента TikTok."""
+    LIVE = "live"
+    PHOTO = "photo"
+    VIDEO = "video"
+    MUSIC = "music"
+    ACCOUNT = "account"
+    UNKNOWN = "unknown"
+    
+    
+class TikTokErrorCode(Enum):
+    """Перечисление, представляющее коды ошибок для операций с TikTok."""
+    
+    # Успех
+    SUCCESS = "SUCCESS"
+    
+    # Ошибки проверки входных данных (1xx)
+    INVALID_URL = "INVALID_URL"
+    EMPTY_URL = "EMPTY_URL"
+    UNSUPPORTED_CONTENT_TYPE = "UNSUPPORTED_CONTENT_TYPE"
+    URL_RESOLUTION_FAILED = "URL_RESOLUTION_FAILED"
+    
+    # Сетевые ошибки (2xx)
+    CONNECTION_ERROR = "CONNECTION_ERROR"
+    DOWNLOAD_ERROR = "DOWNLOAD_ERROR"
+    EXTRACTOR_ERROR = "EXTRACTOR_ERROR"
+    PROXY_ERROR = "PROXY_ERROR"
+    
+    # Ошибки контента (3xx)
+    NO_EXTRACTOR_FOUND = "NO_EXTRACTOR_FOUND"
+    NO_CONTENT_FOUND = "NO_CONTENT_FOUND"
+    METADATA_EXTRACTION_FAILED = "METADATA_EXTRACTION_FAILED"
+    VIDEO_EXTRACTION_FAILED = "VIDEO_EXTRACTION_FAILED"
+    PHOTO_EXTRACTION_FAILED = "PHOTO_EXTRACTION_FAILED"
+    MUSIC_EXTRACTION_FAILED = "MUSIC_EXTRACTION_FAILED"
+    NO_MEDIA_FORMATS_FOUND = "NO_MEDIA_FORMATS_FOUND"
+    NO_IMAGES_FOUND = "NO_IMAGES_FOUND"
+    NO_THUMBNAILS_FOUND = "NO_THUMBNAILS_FOUND"
+    
+    # Ошибки файловой системы (4xx)
+    COOKIE_FILE_NOT_FOUND = "COOKIE_FILE_NOT_FOUND"
+    OUTPUT_PATH_ERROR = "OUTPUT_PATH_ERROR"
+    FILE_WRITE_ERROR = "FILE_WRITE_ERROR"
+    
+    # Системные ошибки (5xx)
+    UNEXPECTED_ERROR = "UNEXPECTED_ERROR"
+    INITIALIZATION_ERROR = "INITIALIZATION_ERROR"
+    EXTRACT_INFO_NOT_CALLED = "EXTRACT_INFO_NOT_CALLED"
+    GALLERY_DL_ERROR = "GALLERY_DL_ERROR"
+    YT_DLP_ERROR = "YT_DLP_ERROR"
