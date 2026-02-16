@@ -340,8 +340,9 @@ class YoutubeExtractor(AbstractExtractor):
                     logger.debug("Skipping low format: %s", format_str)
                     continue
 
-                # Ширина — стандартное соотношение 16:9
-                width = int(height * 16 / 9)
+                # Ширина неизвестна до скачивания (Shorts = 9:16, обычное = 16:9)
+                # Реальные размеры определяются через ffprobe после скачивания
+                width = None
 
                 self._data.videos.append(
                     YoutubeVideo(

@@ -1,17 +1,13 @@
 import logging
 from uuid import uuid4
-from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlparse
 
-from gallery_dl import extractor, config
-from gallery_dl.extractor.instagram import InstagramPostExtractor
-from gallery_dl.exception import NoExtractorError, AuthenticationError
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 
 from ..abstractions import AbstractExtractor
-from ..abstractions import CookieFileNotFoundError
 from .enums import InstagramErrorCode, ContentType
-from .exceptions import InstagramSessionError
 from .models import (
     InstagramData,
     InstagramAudio,
@@ -26,15 +22,14 @@ logger = logging.getLogger("instagram")
 
 class InstagramExtractor(AbstractExtractor):
     """
-    Загрузчик медиа из Instagram.
-    
+    Загрузчик медиа из Instagram через yt-dlp (без cookies).
+
     Поддерживает:
     - отдельные изображения
     - публикации с видео
     - альбомы (карусели)
     - Reels
     - IGTV
-    - Stories
     """
 
     def __init__(
@@ -42,224 +37,156 @@ class InstagramExtractor(AbstractExtractor):
         proxy: Optional[str] = None,
         cookie_path: Optional[str] = None,
     ) -> None:
-        """
-        Инициализация загрузчика Instagram.
-        
-        Аргументы:
-            cookie_path: Путь для хранения cookies и сессии
-            proxy: URL прокси-сервера (опционально)
-        """
-        logger.info("Инициализация загрузчика Instagram")
-        
+        logger.info("Инициализация загрузчика Instagram (yt-dlp, без cookies)")
+
         self.proxy = proxy
-        self.cookies_path = Path(cookie_path) if cookie_path else None
+        self.cookie_path = cookie_path
 
-        if not self.cookies_path or not self.cookies_path.exists():
-            error_msg = f"Файл cookie не найден: {self.cookies_path}"
-            logger.error(error_msg)
-            raise CookieFileNotFoundError(error_msg, InstagramErrorCode.COOKIE_FILE_NOT_FOUND)
+        self.unsupported_types: List[ContentType] = [
+            ContentType.UNKNOWN,
+        ]
 
-        try:
-            self.unsupported_types: List[ContentType] = [
-                ContentType.UNKNOWN
-            ]
-            
-            self._data: Optional[InstagramData] = None
-            self._last_result: Optional[InstagramResult] = None
-            
-            self._init_loader()
-            logger.debug("Загрузчик Instagram успешно инициализирован")
+        self._data: Optional[InstagramData] = None
+        self._last_result: Optional[InstagramResult] = None
 
-        except Exception as e:
-            error_msg = f"Ошибка инициализации загрузчика Instagram: {e}"
-            logger.error(error_msg)
-            raise Exception(error_msg) from e
+        # Базовые опции yt-dlp
+        self._base_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": False,       # Позволяем карусели
+            "extract_flat": False,
+            "skip_download": True,     # Только extract, не качаем
+        }
+
+        if self.proxy:
+            self._base_opts["proxy"] = self.proxy
+
+        # Куки опциональны — если есть, подключаем для приватного контента
+        if self.cookie_path:
+            from pathlib import Path
+            if Path(self.cookie_path).exists():
+                self._base_opts["cookiefile"] = self.cookie_path
+                logger.info(f"Cookies подключены: {self.cookie_path}")
+            else:
+                logger.warning(f"Cookie файл не найден: {self.cookie_path}, работаем без cookies")
+
+        logger.debug("Загрузчик Instagram (yt-dlp) успешно инициализирован")
 
     def _validate_instagram_url(self, url: str) -> bool:
-        """
-        Проверка корректности URL Instagram.
-        
-        Аргументы:
-            url: URL для проверки
-            
-        Возвращает:
-            True, если URL корректный
-        """
         try:
             parsed_url = urlparse(url=url)
             return parsed_url.netloc.endswith("instagram.com")
         except Exception as e:
             logger.debug(f"Ошибка при проверке URL: {e}")
             return False
-        
+
     def _classify_url(self, url: str) -> ContentType:
-        """
-        Классификация типа контента Instagram.
-        
-        Args:
-            url: URL Instagram для классификации
-            
-        Returns:
-            ContentType: Классифицированный тип контента
-        """
         logger.debug(f"Классификация URL: {url}")
-        
         try:
             parsed = urlparse(url)
             path_parts = parsed.path.strip("/").split("/")
-            
+
             if not path_parts:
                 return ContentType.UNKNOWN
-            
-            if "reel" in path_parts:
-                result = ContentType.REEL
+
+            if "reel" in path_parts or "reels" in path_parts:
+                return ContentType.REEL
             elif "tv" in path_parts:
-                result = ContentType.IGTV 
+                return ContentType.IGTV
             elif "p" in path_parts:
-                result = ContentType.POST
+                return ContentType.POST
             elif "stories" in path_parts:
-                result = ContentType.STORIES
+                return ContentType.STORIES
             else:
-                result = ContentType.UNKNOWN
-                
-            logger.debug(f"URL классифицирован как: {result.value}")
-            return result
-        
+                return ContentType.UNKNOWN
+
         except Exception as e:
             logger.error(f"Ошибка классификации URL: {e}")
             return ContentType.UNKNOWN
-        
-    def _init_loader(self) -> None:
-        """Инициализация и аутентификация в Instagram."""
-        try:
-            config.set(("extractor", "instagram"), "cookies", str(self.cookies_path))
-            if self.proxy:
-                config.set(("extractor", "instagram"), "proxy", self.proxy)
-            
-        except Exception as e:
-            error_msg = f"Неожиданная ошибка при инициализации: {e}"
-            logger.error(error_msg)
-            raise InstagramSessionError(error_msg, InstagramErrorCode.INITIALIZATION_ERROR)
 
     def _extract_media_info(self, url: str) -> InstagramResult:
-        """Основной метод извлечения медиа информации."""
+        """Основной метод извлечения медиа информации через yt-dlp."""
         try:
-            extr: InstagramPostExtractor = extractor.find(url=url)
-            if not extr:
-                error_msg = "Экстрактор не найден для данного URL"
-                logger.error(error_msg)
+            opts = dict(self._base_opts)
+
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+            if not info:
                 return InstagramResult(
                     status="error",
                     data=self._data,
-                    context=error_msg,
-                    code=InstagramErrorCode.NO_EXTRACTOR_FOUND,
-                )
-            
-            extr.initialize()
-            data = list(extr.items())
-            
-            if not data:
-                error_msg = "Контент не найден для данного URL"
-                logger.error(error_msg)
-                return InstagramResult(
-                    status="error",
-                    data=self._data,
-                    context=error_msg,
+                    context="yt-dlp не вернул данные",
                     code=InstagramErrorCode.NO_CONTENT_FOUND,
                 )
-            
-            content_class = self._classify_url(url=url)
-            
-            for item in data:
-                content_type = item[0]
-                item_data = item[-1]
-                
-                if content_type == 2:  # Метаданные
-                    self._data.title = item_data.get("fullname")
-                    self._data.author_name = item_data.get("username")
-                    self._data.description = item_data.get("description")
-                    
-                    # Проверка на множественные сторис
-                    if (
-                        content_class == ContentType.STORIES
-                        and item_data.get("count", 0) > 1
-                    ):
-                        error_msg = "Множественные сторис не поддерживаются"
-                        logger.warning(error_msg)
-                        return InstagramResult(
-                            status="error",
-                            data=self._data,
-                            context=error_msg,
-                            code=InstagramErrorCode.CONTENT_NOT_SUPPORTED,
-                        )
-                    
-                elif content_type == 3:  # Медиа
-                    if item_data.get("video_url") is not None:
-                        self._data.is_video = True
-                        self._data.videos.append(
-                            InstagramVideo(
-                                id=uuid4(),
-                                has_audio=True,
-                                url=item_data["video_url"],
-                                width=item_data.get("width"),
-                                height=item_data.get("height"),
-                                name=f"{item_data['filename']}.{item_data['extension']}",
-                            )
-                        )
-                        self._data.thumbnails.append(
-                            InstagramImage(
-                                id=uuid4(),
-                                url=item_data["display_url"],
-                                width=item_data.get("width"),
-                                height=item_data.get("height"),
-                                name=f"Thumbnail_{item_data['filename']}",
-                            )
-                        )
-                        
-                    else:
-                        self._data.is_image = True
-                        self._data.images.append(
-                            InstagramImage(
-                                id=uuid4(),
-                                url=item_data["display_url"],
-                                width=item_data.get("width"),
-                                height=item_data.get("height"),
-                                name=f"{item_data['filename']}.{item_data['extension']}",
-                            )
-                        )
-            
+
+            # Автор
+            uploader = (
+                info.get("uploader")
+                or info.get("channel")
+                or info.get("uploader_id")
+                or "Unknown"
+            )
+            title = info.get("title") or info.get("description", "")[:50] or "Instagram"
+
+            self._data.author_name = uploader
+            self._data.title = title
+            self._data.description = info.get("description")
+
+            # Обработка карусели (entries) или одиночного медиа
+            entries = info.get("entries")
+            if entries:
+                # Это карусель / playlist
+                for entry in entries:
+                    if entry is None:
+                        continue
+                    self._process_entry(entry)
+            else:
+                # Одиночное медиа
+                self._process_entry(info)
+
             # Проверка наличия медиа
             if not self._data.videos and not self._data.images:
-                error_msg = "Медиа не найдено в контенте"
-                logger.warning(error_msg)
                 return InstagramResult(
                     status="error",
                     data=self._data,
-                    context=error_msg,
+                    context="Медиа не найдено в контенте",
                     code=InstagramErrorCode.NO_MEDIA_FOUND,
                 )
-                        
-            logger.info(f"Извлечено {len(self._data.videos)} видео и {len(self._data.images)} изображений")
+
+            logger.info(
+                f"Извлечено {len(self._data.videos)} видео и "
+                f"{len(self._data.images)} изображений"
+            )
             return InstagramResult(data=self._data)
-            
-        except AuthenticationError as e:
-            error_msg = f"Ошибка аутентификации: {e}"
-            logger.error(error_msg)
+
+        except DownloadError as e:
+            error_str = str(e)
+            logger.error(f"yt-dlp DownloadError: {error_str}")
+
+            if "login" in error_str.lower() or "authentication" in error_str.lower():
+                return InstagramResult(
+                    status="error",
+                    data=self._data,
+                    context=f"Требуется авторизация: {e}",
+                    code=InstagramErrorCode.AUTHENTICATION_FAILED,
+                )
+
+            if "not found" in error_str.lower() or "404" in error_str:
+                return InstagramResult(
+                    status="error",
+                    data=self._data,
+                    context=f"Пост не найден: {e}",
+                    code=InstagramErrorCode.POST_NOT_FOUND,
+                )
+
             return InstagramResult(
                 status="error",
                 data=self._data,
-                context=error_msg,
-                code=InstagramErrorCode.AUTHENTICATION_FAILED,
+                context=f"Ошибка извлечения: {e}",
+                code=InstagramErrorCode.EXTRACTION_ERROR,
             )
-        except NoExtractorError as e:
-            error_msg = f"Экстрактор не найден: {e}"
-            logger.error(error_msg)
-            return InstagramResult(
-                status="error",
-                data=self._data,
-                context=error_msg,
-                code=InstagramErrorCode.NO_EXTRACTOR_FOUND,
-            )
+
         except Exception as e:
             error_msg = f"Ошибка извлечения медиа: {e}"
             logger.error(error_msg)
@@ -269,72 +196,134 @@ class InstagramExtractor(AbstractExtractor):
                 context=error_msg,
                 code=InstagramErrorCode.EXTRACTION_ERROR,
             )
-        
+
+    def _process_entry(self, entry: dict) -> None:
+        """Обрабатывает одну запись (видео или изображение) из yt-dlp."""
+        entry_id = str(uuid4())
+        width = entry.get("width")
+        height = entry.get("height")
+
+        # Определяем — видео или картинка
+        video_url = entry.get("url", "")
+        thumbnail = entry.get("thumbnail", "")
+        ext = entry.get("ext", "")
+        formats = entry.get("formats")
+
+        is_video = (
+            ext in ("mp4", "webm", "m4v")
+            or entry.get("duration") is not None
+            or (formats and any(
+                f.get("vcodec", "none") != "none"
+                for f in formats
+            ))
+        )
+
+        if is_video:
+            # Выбираем лучший видео URL
+            best_url = video_url
+            best_width = width
+            best_height = height
+
+            if formats:
+                # Ищем лучший формат с видео
+                video_formats = [
+                    f for f in formats
+                    if f.get("vcodec", "none") != "none"
+                ]
+                if video_formats:
+                    # Сортируем по высоте (разрешению)
+                    video_formats.sort(
+                        key=lambda f: (f.get("height") or 0),
+                        reverse=True,
+                    )
+                    best = video_formats[0]
+                    best_url = best.get("url", best_url)
+                    best_width = best.get("width", best_width)
+                    best_height = best.get("height", best_height)
+
+            self._data.is_video = True
+            self._data.videos.append(
+                InstagramVideo(
+                    id=entry_id,
+                    has_audio=True,
+                    url=best_url,
+                    width=best_width,
+                    height=best_height,
+                    name=entry.get("title", f"video_{entry_id}"),
+                )
+            )
+
+            # Превью
+            if thumbnail:
+                self._data.thumbnails.append(
+                    InstagramImage(
+                        id=str(uuid4()),
+                        url=thumbnail,
+                        width=best_width,
+                        height=best_height,
+                        name=f"Thumbnail_{entry_id}",
+                    )
+                )
+        else:
+            # Изображение
+            image_url = (
+                video_url
+                or thumbnail
+                or entry.get("display_url", "")
+            )
+            if image_url:
+                self._data.is_image = True
+                self._data.images.append(
+                    InstagramImage(
+                        id=entry_id,
+                        url=image_url,
+                        width=width,
+                        height=height,
+                        name=entry.get("title", f"image_{entry_id}"),
+                    )
+                )
+
     def extract_info(self, url: str) -> InstagramResult:
-        """
-        Извлечение медиа информации из URL Instagram.
-        
-        Args:
-            url: URL Instagram для извлечения информации
-            
-        Returns:
-            InstagramResult: Результат, содержащий извлеченные медиа данные
-        """
         logger.info(f"Извлечение информации из URL: {url}")
-        
+
         self._data = InstagramData(url=url)
-        
+
         # Проверка URL
         if not url or not isinstance(url, str):
-            error_msg = "Предоставлен неверный URL"
-            logger.error(error_msg)
             self._last_result = InstagramResult(
                 status="error",
                 data=self._data,
-                context=error_msg,
+                context="Предоставлен неверный URL",
                 code=InstagramErrorCode.EMPTY_URL,
             )
             return self._last_result
-        
+
         if not self._validate_instagram_url(url):
-            error_msg = "Неверный или неподдерживаемый URL Instagram"
-            logger.error(error_msg)
             self._last_result = InstagramResult(
                 status="error",
                 data=self._data,
-                context=error_msg,
+                context="Неверный или неподдерживаемый URL Instagram",
                 code=InstagramErrorCode.INVALID_URL,
             )
             return self._last_result
-        
+
         # Классификация URL
         content_type = self._classify_url(url=url)
-        
+
         if content_type in self.unsupported_types:
-            error_msg = f"Неподдерживаемый тип контента: {content_type.value}"
-            logger.warning(error_msg)
             self._last_result = InstagramResult(
                 status="error",
                 data=self._data,
-                context=error_msg,
+                context=f"Неподдерживаемый тип контента: {content_type.value}",
                 code=InstagramErrorCode.CONTENT_NOT_SUPPORTED,
             )
             return self._last_result
-        
+
         # Извлечение информации
         self._last_result = self._extract_media_info(url=url)
         return self._last_result
 
     def get_error_description(self, code: InstagramErrorCode) -> str:
-        """
-        Получение человеко-читаемого описания для кода ошибки.
-        
-        Args:
-            code: Значение перечисления кода ошибки
-            
-        Returns:
-            Строка описания
-        """
         descriptions = {
             InstagramErrorCode.SUCCESS.value: "Операция успешно завершена",
             InstagramErrorCode.INVALID_URL.value: "Предоставленный URL Instagram неверен или не поддерживается",
@@ -359,6 +348,6 @@ class InstagramExtractor(AbstractExtractor):
             InstagramErrorCode.UNEXPECTED_ERROR.value: "Произошла непредвиденная ошибка",
             InstagramErrorCode.INITIALIZATION_ERROR.value: "Не удалось инициализировать загрузчик",
             InstagramErrorCode.DOWNLOAD_ERROR.value: "Не удалось загрузить медиа",
-            InstagramErrorCode.GALLERY_DL_ERROR.value: "Произошла внутренняя ошибка gallery-dl",
+            InstagramErrorCode.GALLERY_DL_ERROR.value: "Произошла внутренняя ошибка",
         }
         return descriptions.get(code, "Неизвестная ошибка")

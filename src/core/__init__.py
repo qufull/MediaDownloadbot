@@ -81,11 +81,15 @@ from .extractors.twitter import (
   TwitterExtractor
 )
 
+from .extractors.vk import (
+  VKExtractor
+)
+
 
 __all__ = [
     # Базовый загрузчик
     "Downloader",
-    
+
     # Абстрактные классы
     "AbstractExtractor",
     "AbstractDataModel",
@@ -94,19 +98,19 @@ __all__ = [
     "AbstractVideoModel",
     "AbstractResultModel",
     "AbstractErrorCodeModel",
-    
+
     # Аннотации типов
     "DataDictAnnotation",
     "AudioDictAnnotation",
     "ImageDictAnnotation",
     "VideoDictAnnotation",
     "ResultDictAnnotation",
-    
+
     # Общие исключения
     "CookieFileNotFoundError",
     "ExtractInfoNotCalledError",
     "UnsupportedContentTypeError",
-    
+
     # Instagram компоненты
     "InstagramData",
     "InstagramAudio",
@@ -117,7 +121,7 @@ __all__ = [
     "InstagramExtractor",
     "InstagramSessionError",
     "InstagramContentType",
-    
+
     # Reddit компоненты
     "RedditData",
     "RedditAudio",
@@ -128,7 +132,7 @@ __all__ = [
     "RedditExtractor",
     "InvalidRedditUrlError",
     "RedditContentType",
-    
+
     # Rutube компоненты
     "RutubeData",
     "RutubeAudio",
@@ -138,7 +142,7 @@ __all__ = [
     "RutubeErrorCode",
     "RutubeExtractor",
     "RutubeContentType",
-    
+
     # TikTok компоненты
     "TikTokData",
     "TikTokAudio",
@@ -148,7 +152,7 @@ __all__ = [
     "TikTokErrorCode",
     "TikTokExtractor",
     "TikTokContentType",
-    
+
     # YouTube компоненты
     "YoutubeData",
     "YoutubeAudio",
@@ -160,7 +164,9 @@ __all__ = [
     "YoutubeContentType",
     "MassbotsApiError",
 
-    "TwitterExtractor"
+    "TwitterExtractor",
+
+    "VKExtractor",
 ]
 
 

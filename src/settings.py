@@ -51,7 +51,7 @@ class ProxySettings(BaseSettings):
 
 class MassbotsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
-    token: Annotated[str, Field(validation_alias="massbots_token")]
+    token: Annotated[Optional[str], Field(default=None, validation_alias="massbots_token")]
     bot_id: Annotated[Optional[str], Field(default=None, validation_alias="massbots_bot_id")]
 
 

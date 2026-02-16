@@ -1,7 +1,26 @@
-
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+
+
+def get_video_dimensions(video_path: str) -> Tuple[Optional[int], Optional[int]]:
+    """Получает ширину и высоту видео через ffprobe."""
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=s=x:p=0",
+            str(video_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0 and "x" in result.stdout.strip():
+            parts = result.stdout.strip().split("x")
+            return int(parts[0]), int(parts[1])
+    except Exception:
+        pass
+    return None, None
+
 
 def make_video_thumbnail(video_path: str, out_dir: str, *, seek_sec: float = 1.0) -> Optional[Path]:
     """

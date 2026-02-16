@@ -16,9 +16,25 @@ from .patterns import DomainMatcher
 from .texts import MessageTemplates
 
 from src.config import bot, settings, user_registry
+from src.config import youtube_rate_limiter
 from src.celery_app.tasks.media_extractor_worker import extract_info
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+ERROR_AUTO_DELETE_SECONDS = 10
+
 router = Router(name=__name__)
+
+
+async def _auto_delete(bot_instance, chat_id: int, message_id: int, delay: int = ERROR_AUTO_DELETE_SECONDS) -> None:
+    """Удаляет сообщение через указанное количество секунд."""
+    await asyncio.sleep(delay)
+    try:
+        await bot_instance.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as e:
+        logger.warning(f"[auto_delete] Не удалось удалить сообщение {message_id}: {e}")
 
 
 class BroadcastStates(StatesGroup):
@@ -85,6 +101,8 @@ async def handle_broadcast_message(message: Message, state: FSMContext) -> None:
         await message.answer("❌ Нет пользователей", reply_markup=get_admin_keyboard())
         return
 
+    sent_count = 0  # Счетчик успешно отправленных сообщений
+
     for user_id in users:
         try:
             await bot.copy_message(
@@ -92,12 +110,17 @@ async def handle_broadcast_message(message: Message, state: FSMContext) -> None:
                 from_chat_id=message.chat.id,
                 message_id=message.message_id,
             )
+            sent_count += 1  # Увеличиваем счетчик успешных отправок
         except:
             user_registry.deactivate_user(user_id)
 
         await asyncio.sleep(0.05)
 
-    await message.answer("Рассылка отправлена!", reply_markup=get_admin_keyboard())
+    # Формируем сообщение с результатами рассылки
+    result_text = f"✅ Рассылка завершена!\n"
+    result_text += f"📤 Отправлено: {sent_count}\n"
+
+    await message.answer(result_text, reply_markup=get_admin_keyboard())
 
 
 @router.message(Command("products"))
@@ -138,6 +161,19 @@ async def handle_url_message(message: Message) -> SendMessage:
             await handle_unsupported_domain(domain=domain, message=message)
             return
 
+        # === Проверка дневного лимита YouTube (админы — без ограничений) ===
+        if service_type == ServiceType.YOUTUBE and message.from_user.id not in settings.telegram.admin_ids:
+            if not youtube_rate_limiter.can_download(message.chat.id):
+                limit_msg = await message.answer(
+                    text=MessageTemplates.YOUTUBE_DAILY_LIMIT_REACHED.format(
+                        used=youtube_rate_limiter.get_used(message.chat.id),
+                        limit=youtube_rate_limiter.DAILY_LIMIT,
+                    )
+                )
+                asyncio.create_task(_auto_delete(message.bot, message.chat.id, limit_msg.message_id))
+                return
+            youtube_rate_limiter.increment(message.chat.id)
+
         extract_info.delay(
             url=url,
             chat_id=message.chat.id,
@@ -147,7 +183,8 @@ async def handle_url_message(message: Message) -> SendMessage:
 
     except Exception as e:
         error_text = MessageTemplates.ERROR
-        await message.answer(text=error_text)
+        error_msg = await message.answer(text=error_text)
+        asyncio.create_task(_auto_delete(message.bot, message.chat.id, error_msg.message_id))
 
 
 async def handle_unsupported_domain(domain: str, message: Message) -> SendMessage:
@@ -160,7 +197,8 @@ async def handle_unsupported_domain(domain: str, message: Message) -> SendMessag
         domain=domain,
         supported_services=supported_services
     )
-    await message.answer(text=text)
+    error_msg = await message.answer(text=text)
+    asyncio.create_task(_auto_delete(message.bot, message.chat.id, error_msg.message_id))
 
 @router.message(Command("balance"))
 async def massbots_balance_cmd(message: Message):
@@ -185,6 +223,5 @@ async def massbots_balance_cmd(message: Message):
 async def handle_unknown_message(message: Message) -> None:
     """Обработчик неизвестных сообщений."""
     unknown_text = MessageTemplates.UNKNOWN
-    await message.answer(text=unknown_text)
-
-
+    error_msg = await message.answer(text=unknown_text)
+    asyncio.create_task(_auto_delete(message.bot, message.chat.id, error_msg.message_id))

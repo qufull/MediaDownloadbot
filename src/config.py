@@ -15,10 +15,11 @@ from .settings import AppSettings
 
 from src.core import Downloader
 from src.databases import (
-    MediaCacheStorage, 
+    MediaCacheStorage,
     UserActivityQueue,
     UserSessionStorage,
-    FileIdCache
+    FileIdCache,
+    YouTubeRateLimiter,
 )
 from src.databases.user_registry import UserRegistry
 from src.core import (
@@ -28,6 +29,7 @@ from src.core import (
     YoutubeExtractor,
     InstagramExtractor,
     TwitterExtractor,
+    VKExtractor,
 )
 
 
@@ -48,10 +50,9 @@ downloader = Downloader(
     output_path=settings.local_storage.media_storage_path,
     cookie_path=settings.local_storage.browser_cookie_path,
     rutube_proxy=settings.proxy.rutube_proxy,
-    youtube_extractor=youtube_extractor,
-    bot_token=settings.telegram.token,
     massbots_token=settings.massbots.token,
     massbots_bot_id=settings.massbots.bot_id,
+    bot_token=settings.telegram.token,
 )
 
 reddit_extractor = RedditExtractor(
@@ -74,6 +75,10 @@ instagram_extractor = InstagramExtractor(
 )
 
 twitter_extractor = TwitterExtractor(
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+
+vk_extractor = VKExtractor(
     cookie_path=settings.local_storage.browser_cookie_path,
 )
 
@@ -102,6 +107,12 @@ user_activity_queue = UserActivityQueue(
     db=settings.redis.user_activity_db,
 )
 user_activity_queue.clear_all()
+
+youtube_rate_limiter = YouTubeRateLimiter(
+    host=settings.redis.host,
+    port=settings.redis.port,
+    db=settings.redis.user_activity_db,
+)
 
 user_registry = UserRegistry(
     db_path="data/users.db",

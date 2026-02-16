@@ -4,7 +4,6 @@ from celery.schedules import crontab
 
 from src.config import settings
 
-
 celery_event_loop = new_event_loop()
 
 celery_app = Celery(
@@ -34,14 +33,16 @@ celery_app.conf.update(
         "src.celery_app.tasks.video_download_worker.download_reddit_video": {"queue": "download_reddit_queue"},
         "src.celery_app.tasks.video_download_worker.download_tiktok_video": {"queue": "download_tiktok_queue"},
         "src.celery_app.tasks.video_download_worker.download_twitter_video": {"queue": "download_twitter_queue"},
+        "src.celery_app.tasks.video_download_worker.download_instagram_video": {"queue": "download_instagram_queue"},
+        "src.celery_app.tasks.video_download_worker.download_vk_video": {"queue": "download_vk_queue"},
         # Очереди для очистки папки
         "src.celery_app.tasks.cleanup_worker.smart_cleanup_downloads": {"queue": "cleanup_queue"},
         "src.celery_app.tasks.cleanup_worker.quick_cleanup_old_files": {"queue": "cleanup_queue"},
     },
-    
+
     broker_connection_retry_on_startup=True,
     broker_connection_retry=True,
-    
+
     beat_schedule={
         # Умная очистка каждый час
         'smart-cleanup-every-hour': {
@@ -50,7 +51,7 @@ celery_app.conf.update(
             'args': (),
             'options': {'queue': 'cleanup_queue'}
         },
-        
+
         # Быстрая очистка каждые 6 часов
         'quick-cleanup-every-6-hours': {
             'task': 'quick_cleanup_old_files',
@@ -58,7 +59,7 @@ celery_app.conf.update(
             'args': (24,),  # Удалять файлы старше 24 часов
             'options': {'queue': 'cleanup_queue'}
         },
-        
+
         # Дополнительная агрессивная очистка ночью
         'nightly-deep-cleanup': {
             'task': 'quick_cleanup_old_files',
@@ -80,10 +81,9 @@ celery_app.autodiscover_tasks(
         "src.celery_app.tasks.audio_download_worker",
         "src.celery_app.tasks.video_download_worker",
         "src.celery_app.tasks.cleanup_worker",
-    ], 
+    ],
     force=True
 )
-
 
 if __name__ == "__main__":
     celery_app.start()

@@ -23,6 +23,8 @@ from src.celery_app.tasks.video_download_worker import (
     download_tiktok_video,
     download_youtube_video,
     download_twitter_video,
+    download_instagram_video,
+    download_vk_video,
 )
 
 router = Router(name=__name__)
@@ -66,33 +68,14 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
 
         user_activity_queue.create_download(url=url, chat_id=chat_id, service=service)
 
-        # Instagram — прямой answer_video
-        if service == "instagram":
-            caption = MessageTemplates.CALLBACK_VIDEO_CAPTION.format(
-                url=url,
-                width=width,
-                height=height,
-                service=service,
-                author_name=author_name,
-                botname=settings.telegram.name,
-            )
-
-            async with ChatActionSender(bot=bot, action=ChatAction.UPLOAD_VIDEO, chat_id=chat_id):
-                await callback.message.answer_video(
-                    width=width,
-                    height=height,
-                    caption=caption,
-                    video=video.get("url"),
-                    supports_streaming=True,
-                )
-            return
-
         task_map = {
             "twitter": download_twitter_video,
             "youtube": download_youtube_video,
             "reddit": download_reddit_video,
             "rutube": download_rutube_video,
             "tiktok": download_tiktok_video,
+            "instagram": download_instagram_video,
+            "vk": download_vk_video,
         }
         task = task_map.get(service)
         if not task:

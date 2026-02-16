@@ -21,7 +21,8 @@ from src.config import (
     tiktok_extractor,
     youtube_extractor,
     instagram_extractor,
-    twitter_extractor
+    twitter_extractor,
+    vk_extractor,
 )
 
 
@@ -257,6 +258,7 @@ def get_extractor(service: str) -> AbstractExtractor:
         "youtube": youtube_extractor,
         "instagram": instagram_extractor,
         "twitter": twitter_extractor,
+        "vk": vk_extractor,
     }
 
     if service not in extractors:
