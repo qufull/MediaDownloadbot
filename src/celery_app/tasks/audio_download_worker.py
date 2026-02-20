@@ -69,19 +69,15 @@ async def async_download_audio(
 
         # ── YouTube через massbots — отправляем file_id через api.telegram.org ──
         if isinstance(result, YoutubeDownloadResult):
-            # убираем анимацию ожидания
-            try:
-                await bot.delete_message(
-                    chat_id=chat_id,
-                    message_id=waiting_msg.message_id,
-                )
-            except Exception:
-                pass
-
             if result.status != "success" or not result.file_id:
                 logger.error(
                     f"[async_download_audio] massbots error: {result.context}"
                 )
+                if waiting_msg:
+                    try:
+                        await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
+                    except Exception:
+                        pass
                 await send_error(
                     chat_id=chat_id,
                     text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
@@ -114,10 +110,21 @@ async def async_download_audio(
                         "[async_download_audio] massbots audio sent via "
                         "api.telegram.org"
                     )
+                    # Удаляем ожидание ПОСЛЕ успешной отправки
+                    if waiting_msg:
+                        try:
+                            await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
+                        except Exception:
+                            pass
                 else:
                     logger.error(
                         f"[async_download_audio] send failed: {body}"
                     )
+                    if waiting_msg:
+                        try:
+                            await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
+                        except Exception:
+                            pass
                     await send_error(
                         chat_id=chat_id,
                         text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
@@ -127,6 +134,11 @@ async def async_download_audio(
                     "[async_download_audio] send audio via api.telegram.org "
                     f"failed: {e}"
                 )
+                if waiting_msg:
+                    try:
+                        await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
+                    except Exception:
+                        pass
                 await send_error(
                     chat_id=chat_id,
                     text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
@@ -231,78 +243,71 @@ async def handle_download_result(
         f"status={result.status}"
     )
 
-    # удаляем анимацию "загрузка"
-    if message_id:
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception as e:
-            logger.warning(
-                f"[handle_download_result] Не удалось удалить сообщение "
-                f"{message_id}: {e}"
-            )
-
-    if result.status == "success":
-        logger.info(
-            "[handle_download_result] Загрузка успешна, отправляю аудио"
-        )
-
-        sending_msg = await send_waiting(
-            chat_id=chat_id,
-            text=MessageTemplates.SENDING_AUDIO,
-        )
-
-        if media_info and media_info.get("data"):
-            url = media_info["data"].get("url", "")
-            author_name = media_info["data"].get("author_name", "Unknown")
-        else:
-            url = ""
-            author_name = "Unknown"
-
-        caption = MessageTemplates.DOWNLOAD_AUDIO_CAPTION.format(
-            service=service,
-            url=url,
-            botname=settings.telegram.name,
-            author_name=author_name,
-        )
-
-        try:
-            async with ChatActionSender(
-                bot=bot,
-                chat_id=chat_id,
-                action=ChatAction.UPLOAD_VOICE,
-            ):
-                await bot.send_audio(
-                    chat_id=chat_id,
-                    caption=caption,
-                    audio=FSInputFile(path=result.data.path),
-                )
-                logger.info(
-                    "[handle_download_result] Аудио успешно отправлено "
-                    f"(chat_id={chat_id})"
-                )
-        except Exception as e:
-            logger.exception(
-                f"[handle_download_result] Ошибка при отправке аудио: {e}"
-            )
-            await send_error(
-                chat_id=chat_id,
-                text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
-            )
-
-        if sending_msg:
-            try:
-                await bot.delete_message(
-                    chat_id=chat_id,
-                    message_id=sending_msg.message_id,
-                )
-            except Exception:
-                pass
-
-    else:
+    if result.status != "success":
         logger.error(
             f"[handle_download_result] Ошибка загрузки: status={result.status}, "
             f"chat_id={chat_id}"
         )
+        if message_id:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
+        await send_error(
+            chat_id=chat_id,
+            text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
+        )
+        return
+
+    logger.info(
+        "[handle_download_result] Загрузка успешна, отправляю аудио"
+    )
+
+    if media_info and media_info.get("data"):
+        url = media_info["data"].get("url", "")
+        author_name = media_info["data"].get("author_name", "Unknown")
+    else:
+        url = ""
+        author_name = "Unknown"
+
+    caption = MessageTemplates.DOWNLOAD_AUDIO_CAPTION.format(
+        service=service,
+        url=url,
+        botname=settings.telegram.name,
+        author_name=author_name,
+    )
+
+    try:
+        async with ChatActionSender(
+            bot=bot,
+            chat_id=chat_id,
+            action=ChatAction.UPLOAD_VOICE,
+        ):
+            await bot.send_audio(
+                chat_id=chat_id,
+                caption=caption,
+                audio=FSInputFile(path=result.data.path),
+            )
+            logger.info(
+                "[handle_download_result] Аудио успешно отправлено "
+                f"(chat_id={chat_id})"
+            )
+
+        # Удаляем ожидание ПОСЛЕ успешной отправки аудио
+        if message_id:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.exception(
+            f"[handle_download_result] Ошибка при отправке аудио: {e}"
+        )
+        if message_id:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
         await send_error(
             chat_id=chat_id,
             text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,

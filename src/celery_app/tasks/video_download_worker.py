@@ -152,21 +152,16 @@ async def async_download_video(
 
         # ── YouTube через massbots — file_id через api.telegram.org ──
         if isinstance(result, YoutubeDownloadResult):
-            # Удаляем "ожидание"
-            if waiting_msg:
-                try:
-                    await bot.delete_message(
-                        chat_id=chat_id,
-                        message_id=waiting_msg.message_id,
-                    )
-                except Exception:
-                    pass
-
             # NB: YoutubeDownloadResult.status == "success" (не "ready")
             if result.status != "success" or not result.file_id:
                 logger.error(
                     f"[async_download_video] massbots error: {result.context}"
                 )
+                if waiting_msg:
+                    try:
+                        await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
+                    except Exception:
+                        pass
                 await send_error(
                     chat_id=chat_id,
                     text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
@@ -212,10 +207,21 @@ async def async_download_video(
                         width=width,
                         file_id=result.file_id,
                     )
+                    # Удаляем ожидание ПОСЛЕ успешной отправки видео
+                    if waiting_msg:
+                        try:
+                            await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
+                        except Exception:
+                            pass
                 else:
                     logger.error(
                         f"[async_download_video] sendVideo response not ok: {resp}"
                     )
+                    if waiting_msg:
+                        try:
+                            await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
+                        except Exception:
+                            pass
                     await send_error(
                         chat_id=chat_id,
                         text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
@@ -225,6 +231,11 @@ async def async_download_video(
                     f"[async_download_video] sendVideo via api.telegram.org "
                     f"failed: {e}"
                 )
+                if waiting_msg:
+                    try:
+                        await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
+                    except Exception:
+                        pass
                 await send_error(
                     chat_id=chat_id,
                     text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
@@ -331,14 +342,13 @@ async def handle_download_result(
 ):
     logger.info(f"[handle_download_result] chat_id={chat_id}, status={result.status}")
 
-    # Удаляем сообщение/анимацию "загрузка"
-    if message_id:
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception:
-            pass
-
     if result.status != "success":
+        # Удаляем ожидание при ошибке
+        if message_id:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
         await send_error(
             chat_id=chat_id,
             text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
@@ -351,17 +361,16 @@ async def handle_download_result(
         or not _is_nonempty_file(result.data.path)
     ):
         logger.error("[handle_download_result] success без файла")
+        if message_id:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
         await send_error(
             chat_id=chat_id,
             text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
         )
         return
-
-    # Показать "отправляем видео" как load.mp4
-    sending_msg = await send_waiting(
-        chat_id=chat_id,
-        text=MessageTemplates.SENDING_VIDEO,
-    )
 
     if media_info and media_info.get("data"):
         original_url = media_info["data"].get("url", "")
@@ -436,17 +445,22 @@ async def handle_download_result(
                 )
                 logger.info("[handle_download_result] file_id сохранён в кэш")
 
-        # Удаляем "отправляем видео"
-        if sending_msg:
+        # Удаляем сообщение ожидания
+        if message_id:
             try:
                 await bot.delete_message(
                     chat_id=chat_id,
-                    message_id=sending_msg.message_id,
+                    message_id=message_id,
                 )
             except Exception:
                 pass
     except Exception as e:
         logger.exception(f"[handle_download_result] Ошибка отправки: {e}")
+        if message_id:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
         await send_error(
             chat_id=chat_id,
             text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,

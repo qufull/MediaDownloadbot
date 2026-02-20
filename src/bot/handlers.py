@@ -145,6 +145,25 @@ async def handle_help(message: Message) -> SendMessage:
     await message.answer(text=help_text)
 
 
+@router.message(Command("donate"))
+async def handle_donate(message: Message) -> SendMessage:
+    """Обработчик команды /donate — поддержка проекта."""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    donate_text = (
+        "Лучшая поддержка от вас — это небольшой регулярный платёж "
+        "за сервис, которым вы и так уже пользуетесь ежедневно.\n\n"
+        "🛡 <b>Сервис SkyNet VPN.</b>\n"
+        "Быстрый. Надёжный. Безопасный."
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 Купить подписку", url="https://t.me/skynetaivpn_bot")],
+    ])
+
+    await message.answer(text=donate_text, reply_markup=keyboard)
+
+
 @router.message(URLFilter(check_support=False))
 async def handle_url_message(message: Message) -> SendMessage:
     """Обработчик сообщений с URL."""
