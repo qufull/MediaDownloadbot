@@ -9,7 +9,9 @@ from pathlib import Path
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from src.utils.ads import send_vpn_ad
 from ..app import celery_app
 from ..app import celery_event_loop
 from .texts import MessageTemplates
@@ -97,7 +99,6 @@ def _is_nonempty_file(path: str) -> bool:
 def _resolve_media(value: str):
     p = Path(value)
     return FSInputFile(str(p)) if p.exists() else value
-
 
 # ─── Main download function ─────────────────────────────────────────
 
@@ -317,6 +318,7 @@ async def send_cached_video(
                 send_kwargs["height"] = height
             await bot.send_video(**send_kwargs)
         logger.info("[send_cached_video] Видео отправлено из кэша")
+        await send_vpn_ad(chat_id)
     except Exception as e:
         logger.exception(f"[send_cached_video] Ошибка: {e}")
         file_id_cache.delete_cached(url=url, height=height)
@@ -443,6 +445,7 @@ async def handle_download_result(
                     width=width,
                     file_id=sent_message.video.file_id,
                 )
+                await send_vpn_ad(chat_id)
                 logger.info("[handle_download_result] file_id сохранён в кэш")
 
         # Удаляем сообщение ожидания
@@ -599,6 +602,20 @@ def download_vk_video(
 ):
     _run_video_task(
         "vk",
+        url,
+        width,
+        height,
+        chat_id,
+        video_id,
+        message_id,
+        merge_audio,
+    )
+@celery_app.task(name="download_pinterest_video", queue="download_pinterest_queue")
+def download_pinterest_video(
+    url, width, height, chat_id, video_id, message_id, merge_audio
+):
+    _run_video_task(
+        "pinterest",
         url,
         width,
         height,

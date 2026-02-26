@@ -23,6 +23,7 @@ from src.config import (
     instagram_extractor,
     twitter_extractor,
     vk_extractor,
+    pinterest_extractor,
 )
 
 
@@ -259,6 +260,7 @@ def get_extractor(service: str) -> AbstractExtractor:
         "instagram": instagram_extractor,
         "twitter": twitter_extractor,
         "vk": vk_extractor,
+        "pinterest": pinterest_extractor,
     }
 
     if service not in extractors:

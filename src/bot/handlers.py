@@ -3,7 +3,7 @@ from urllib.parse import urlparse
 
 from aiogram import Router, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
-from aiogram.filters import Command
+from aiogram.filters import CommandObject, CommandStart, Command
 from aiogram.methods import SendMessage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -15,8 +15,7 @@ from .keyboards import get_admin_keyboard
 from .patterns import DomainMatcher
 from .texts import MessageTemplates
 
-from src.config import bot, settings, user_registry
-from src.config import youtube_rate_limiter
+from src.config import bot, settings, user_registry, media_rate_limiter
 from src.celery_app.tasks.media_extractor_worker import extract_info
 
 import logging
@@ -40,8 +39,34 @@ async def _auto_delete(bot_instance, chat_id: int, message_id: int, delay: int =
 class BroadcastStates(StatesGroup):
     waiting_for_message = State()
 
-@router.message(Command("start"))
-async def handle_start(message: Message) -> None:
+@router.message(CommandStart())
+async def handle_start(message: Message, command: CommandObject) -> None:
+    user_id = message.from_user.id
+    referrer_id = None
+
+    # --- ЛОГИКА РЕФЕРАЛКИ (работает в фоне) ---
+    if command.args and command.args.startswith("ref_"):
+        try:
+            potential_ref = int(command.args.replace("ref_", ""))
+            if potential_ref != user_id:
+                referrer_id = potential_ref
+        except ValueError:
+            pass
+
+    # Регистрируем в базе (вернет True, только если юзер реально новый)
+    is_new = user_registry.add_user(user_id, referrer_id)
+
+    # Уведомляем пригласившего о бонусе
+    if is_new and referrer_id:
+        try:
+            await bot.send_message(
+                chat_id=referrer_id,
+                text="🎁 <b>У вас новый реферал!</b>\nВаш ежедневный лимит увеличен на <b>2</b> ",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
     welcome_text = MessageTemplates.WELCOME
 
     media = [
@@ -50,15 +75,9 @@ async def handle_start(message: Message) -> None:
             caption=welcome_text,
             parse_mode="HTML",
         ),
-        InputMediaPhoto(
-            media="AgACAgIAAxkBAAKeK2lrfydNOln5bbmhz4KfS8ylyiFwAAI1DWsb3a9hS2W9ydJUXSGvAQADAgADeQADNgQ",
-        ),
-        InputMediaPhoto(
-            media="AgACAgIAAxkBAAKeLWlrf1OMccWuIoSSA37hVDKsNgNOAAJEDWsb3a9hS1z8wwe84IO1AQADAgADeQADNgQ",
-        ),
-        InputMediaPhoto(
-            media="AgACAgIAAxkBAAKeL2lrf2LxLcJ3jvf6Ltpp8OXxBEogAAJFDWsb3a9hS1isoqXax2Y1AQADAgADeQADNgQ",
-        ),
+        InputMediaPhoto(media="AgACAgIAAxkBAAKeK2lrfydNOln5bbmhz4KfS8ylyiFwAAI1DWsb3a9hS2W9ydJUXSGvAQADAgADeQADNgQ"),
+        InputMediaPhoto(media="AgACAgIAAxkBAAKeLWlrf1OMccWuIoSSA37hVDKsNgNOAAJEDWsb3a9hS1z8wwe84IO1AQADAgADeQADNgQ"),
+        InputMediaPhoto(media="AgACAgIAAxkBAAKeL2lrf2LxLcJ3jvf6Ltpp8OXxBEogAAJFDWsb3a9hS1isoqXax2Y1AQADAgADeQADNgQ"),
     ]
 
     await message.answer_media_group(media)
@@ -182,16 +201,16 @@ async def handle_url_message(message: Message) -> SendMessage:
 
         # === Проверка дневного лимита YouTube (админы — без ограничений) ===
         if service_type == ServiceType.YOUTUBE and message.from_user.id not in settings.telegram.admin_ids:
-            if not youtube_rate_limiter.can_download(message.chat.id):
+            if not media_rate_limiter.can_download(message.chat.id):
                 limit_msg = await message.answer(
                     text=MessageTemplates.YOUTUBE_DAILY_LIMIT_REACHED.format(
-                        used=youtube_rate_limiter.get_used(message.chat.id),
-                        limit=youtube_rate_limiter.DAILY_LIMIT,
+                        used=media_rate_limiter.get_used(message.chat.id),
+                        limit=media_rate_limiter.DAILY_LIMIT,
                     )
                 )
                 asyncio.create_task(_auto_delete(message.bot, message.chat.id, limit_msg.message_id))
                 return
-            youtube_rate_limiter.increment(message.chat.id)
+            media_rate_limiter.increment(message.chat.id)
 
         extract_info.delay(
             url=url,
@@ -237,6 +256,36 @@ async def massbots_balance_cmd(message: Message):
 
     except Exception as e:
         await message.answer(f"❌ Ошибка получения баланса:\n<code>{e}</code>", parse_mode="HTML")
+
+
+@router.message(Command("ref"))
+async def handle_ref_command(message: Message) -> None:
+    """Вся информация о рефералах здесь."""
+    user_id = message.from_user.id
+
+    # Считаем данные
+    max_allowed = media_rate_limiter.get_max_allowed(user_id)
+    remaining = media_rate_limiter.get_remaining(user_id)
+    bonus = user_registry.get_bonus(user_id)
+
+    # Генерируем ссылку
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+
+    text = (
+        "🎁 <b>Реферальная программа</b>\n\n"
+        "Приглашайте друзей и увеличивайте свой ежедневный лимит!\n"
+        "За каждого приглашенного вы получаете <b>+2</b> к лимиту навсегда.\n\n"
+        f"📊 <b>Твоя статистика:</b>\n"
+        f"└ Базовый лимит: {media_rate_limiter.DAILY_LIMIT}\n"
+        f"└ Бонусы за друзей: +{bonus}\n"
+        f"└ Итого доступно: <b>{max_allowed}</b> в сутки\n"
+        f"└ Осталось сегодня: <b>{remaining}</b>\n\n"
+        f"🔗 <b>Твоя ссылка для приглашения:</b>\n"
+        f"<code>{ref_link}</code>"
+    )
+
+    await message.answer(text, parse_mode="HTML")
 
 @router.message()
 async def handle_unknown_message(message: Message) -> None:

@@ -81,6 +81,13 @@ class DomainMatcher:
             "vkvideo.ru",
             "www.vkvideo.ru",
         ],
+        ServiceType.PINTEREST: [
+            "pinterest.com",
+            "www.pinterest.com",
+            "ru.pinterest.com",
+            "pin.it",
+            "www.pin.it",
+        ],
     }
 
     # Приоритетные домены для точного сопоставления
@@ -94,6 +101,7 @@ class DomainMatcher:
         "twitter.com": ServiceType.TWITTER,
         "vk.com": ServiceType.VK,
         "vkvideo.ru": ServiceType.VK,
+        "pin.it": ServiceType.PINTEREST,
     }
 
     # Эвристические правила для частичного сопоставления
@@ -109,6 +117,8 @@ class DomainMatcher:
         "vk.com": ServiceType.VK,
         "vk.ru": ServiceType.VK,
         "vkvideo": ServiceType.VK,
+        'pinterest': ServiceType.PINTEREST,
+        'pin.it': ServiceType.PINTEREST,
     }
 
     @classmethod

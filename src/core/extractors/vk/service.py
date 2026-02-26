@@ -87,6 +87,12 @@ class VKExtractor:
             "skip_download": True,
             "noplaylist": False,
             "extract_flat": False,
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "headers": {
+                "Referer": "https://vkvideo.ru/", # Чтобы ВК думал, что мы на сайте
+                "Origin": "https://vkvideo.ru",
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
+            }
         }
 
         if self.cookie_path:

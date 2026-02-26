@@ -39,7 +39,9 @@ class MessageTemplates:
         "• RuTube\n"
         "• Instagram\n"
         "• TikTok\n"
-        "• X (Twitter)"
+        "• X (Twitter)\n"
+        "• VK\n"
+        "• Pinterest"
     )
 
     ERROR = (

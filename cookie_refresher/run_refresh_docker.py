@@ -62,6 +62,11 @@ def build_configs() -> list:
             url="https://x.com",
             paths=[COOKIES_DIR / "twitter_cookies.json"],
         ),
+        "vk": CookieConfig(
+            name="vk",
+            url="https://www.vk.ru",
+            paths=[COOKIES_DIR / "vk_cookies.json"],
+        ),
         "youtube": CookieConfig(
             name="youtube",
             url="https://www.youtube.com",

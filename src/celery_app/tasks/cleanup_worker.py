@@ -80,9 +80,9 @@ def get_oldest_files(folder_path: Path, limit: int = None) -> List[Tuple[Path, d
 
 def smart_cleanup(
     folder_path: Path, 
-    max_size_gb: float = 30.0,
-    max_age_hours: int = 24,
-    target_free_percent: float = 65.0
+    max_size_gb: float = 10.0,
+    max_age_hours: int = 12,
+    target_free_percent: float = 50.0
 ) -> dict:
     """
     Умная очистка папки: удаляет файлы если превышен лимит размера или возраста.

@@ -1,0 +1,35 @@
+import logging
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from src.config import bot  # Импортируем глобальный объект бота
+
+logger = logging.getLogger(__name__)
+
+async def send_vpn_ad(chat_id: int) -> None:
+    """Универсальная функция для отправки рекламы VPN."""
+    vpn_url = "https://t.me/skynetaivpn_bot"  # Твоя ссылка
+
+    text = (
+        f"💛 Наш <a href='{vpn_url}'>Skynet VPN</a> — лучший ВПН!\n"
+        "<blockquote>"
+        "🔮 Обходки глушилок ❞\n"
+        "🌍 Разные локации\n"
+        "📱 Несколько устройств\n"
+        "🌐 Безлимит на трафик\n"
+        "</blockquote>"
+    )
+
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👉 Включить ВПН ↗️", url=vpn_url)]
+    ])
+
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=markup,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        logger.debug(f"Реклама ВПН отправлена в чат {chat_id}")
+    except Exception as e:
+        logger.error(f"[send_vpn_ad] Ошибка отправки рекламы: {e}")

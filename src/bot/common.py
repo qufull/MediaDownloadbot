@@ -41,6 +41,8 @@ class ServiceType(Enum):
 
     VK = "vk"
     """ВКонтакте - социальная сеть."""
+    PINTEREST = "pinterest"
+    """Pinterest - визуальная социальная сеть."""
 
     UNSUPPORTED = "unsupported"
     """Неподдерживаемый сервис."""

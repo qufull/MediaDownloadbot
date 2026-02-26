@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware
@@ -9,9 +10,15 @@ from .keyboards import get_subscription_keyboard
 
 from src.config import settings, user_registry
 
+logger = logging.getLogger(__name__)
+
 
 class UserRegistrationMiddleware(BaseMiddleware):
-    """Middleware для регистрации пользователей."""
+    """
+    Middleware для регистрации пользователей.
+    Пропускает регистрацию для команды /start, чтобы хендлер мог
+    самостоятельно обработать реферальный ID.
+    """
 
     async def __call__(
             self,
@@ -19,9 +26,26 @@ class UserRegistrationMiddleware(BaseMiddleware):
             event: TelegramObject,
             data: Dict[str, Any],
     ) -> Any:
-        if hasattr(event, 'from_user') and event.from_user:
-            user_registry.add_user(event.from_user.id)
+        # Проверяем, есть ли в событии данные о пользователе
+        user = getattr(event, "from_user", None)
+
+        if user and not user.is_bot:
+            user_id = user.id
+
+            # Определяем, является ли текущее сообщение командой /start
+            is_start_command = False
+            if isinstance(event, Message) and event.text:
+                is_start_command = event.text.strip().startswith("/start")
+
+            # Логика:
+            # Если это НЕ /start, регистрируем пользователя (обычная активность)
+            # Если это /start, ничего не делаем — хендлер handle_start сам вызовет
+            # user_registry.add_user с нужным referrer_id.
+            if not is_start_command:
+                user_registry.add_user(user_id)
+
         return await handler(event, data)
+
 
 class IsAdminMiddleware(BaseMiddleware):
     """Middleware для проверки подписок на каналы."""
@@ -37,11 +61,18 @@ class IsAdminMiddleware(BaseMiddleware):
             event: TelegramObject,
             data: Dict[str, Any],
     ) -> Any:
-        user_id: int = event.from_user.id
+        # Безопасное получение пользователя через data
+        user = data.get("event_from_user")
+        if not user:
+            return await handler(event, data)
 
+        user_id: int = user.id
+
+        # Проверка на админа
         if user_id in self.admin_id_list:
             return await handler(event, data)
 
+        # Проверка подписок
         missing_subscriptions = await self._check_subscriptions(event.bot, user_id)
 
         if missing_subscriptions:
@@ -56,24 +87,28 @@ class IsAdminMiddleware(BaseMiddleware):
             clean_username = channel_username.lstrip('@')
 
             try:
-                chat = await bot.get_chat(f"@{clean_username}")
-                chat_id = chat.id
-
+                # В новых версиях лучше сразу обращаться к @username,
+                # но get_chat_member требует chat_id (инт или линк)
                 member = await bot.get_chat_member(
-                    chat_id=chat_id,
+                    chat_id=f"@{clean_username}",
                     user_id=user_id,
                 )
+
                 if member.status not in (
                         ChatMemberStatus.MEMBER,
                         ChatMemberStatus.ADMINISTRATOR,
                         ChatMemberStatus.CREATOR,
                 ):
+                    # Если не подписан, получаем инфо о чате для заголовка
+                    chat = await bot.get_chat(f"@{clean_username}")
                     missing_subscriptions.append({
-                        'chat_id': chat_id,
+                        'chat_id': chat.id,
                         'username': f"@{clean_username}",
-                        'title': chat.title if hasattr(chat, 'title') else f"@{clean_username}"
+                        'title': chat.title
                     })
-            except Exception:
+            except Exception as e:
+                # Если бот не админ в канале, get_chat_member может выкинуть ошибку
+                logger.error(f"Ошибка проверки подписки в {clean_username}: {e}")
                 missing_subscriptions.append({
                     'chat_id': None,
                     'username': f"@{clean_username}",

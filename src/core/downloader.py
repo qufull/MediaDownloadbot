@@ -166,6 +166,8 @@ class Downloader:
             "concurrent_fragment_downloads": concurrent_download_count,
             "proxy": self.proxy,
             "cookiefile": str(self.cookies_path) if self.cookies_path else None,
+            "max_filesize": 2 * 1024 * 1024 * 1024,  # Лимит 2 ГБ (в байтах)
+            "nopart": False,
         }
 
         # massbots SDK для YouTube
@@ -410,11 +412,14 @@ class Downloader:
         safe = self._generate_safe_filename(url, video_format_id)
         file_path = self.output_path / f"{safe}.mp4"
 
-        # Instagram: используем best — Instagram обычно отдаёт один мерженный формат.
-        # bestvideo+bestaudio вызывает проблему "только первый кадр" если
-        # yt-dlp не может правильно смержить dash-стримы
         if service == "instagram":
             format_str = "best[ext=mp4]/best"
+            # Downloader.py -> download_video()
+        elif service == "pinterest":
+            if video_format_id == "best":
+                format_str = "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
+            else:
+                format_str = "best"
         elif service == "vk":
             format_str = video_format_id or "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
         elif service == "reddit":

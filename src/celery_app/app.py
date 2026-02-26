@@ -35,6 +35,8 @@ celery_app.conf.update(
         "src.celery_app.tasks.video_download_worker.download_twitter_video": {"queue": "download_twitter_queue"},
         "src.celery_app.tasks.video_download_worker.download_instagram_video": {"queue": "download_instagram_queue"},
         "src.celery_app.tasks.video_download_worker.download_vk_video": {"queue": "download_vk_queue"},
+        "src.celery_app.tasks.video_download_worker.download_pinterest_video": {"queue": "download_pinterest_queue"},
+
         # Очереди для очистки папки
         "src.celery_app.tasks.cleanup_worker.smart_cleanup_downloads": {"queue": "cleanup_queue"},
         "src.celery_app.tasks.cleanup_worker.quick_cleanup_old_files": {"queue": "cleanup_queue"},

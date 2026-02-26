@@ -56,9 +56,9 @@ services:
           limits:
             memory: 1536M
       command: [ "sh", "-c",
-        "uv run python -m celery -A src.celery_app.app:celery_app worker -Q download_audio_queue,extract_queue,download_youtube_queue,download_rutube_queue,download_reddit_queue,download_tiktok_queue,download_twitter_queue,download_instagram_queue,download_vk_queue,cleanup_queue -n worker@%h -c 2 -P prefork --max-tasks-per-child=10 --max-memory-per-child=400000 --loglevel=warning & \
-              uv run python -m celery -A src.celery_app.app:celery_app beat --loglevel=warning --pidfile=celerybeat.pid & \
-              uv run python main.py"
+        "uv run python -m celery -A src.celery_app.app:celery_app worker -Q download_audio_queue,extract_queue,download_youtube_queue,download_rutube_queue,download_reddit_queue,download_tiktok_queue,download_twitter_queue,download_instagram_queue,download_vk_queue,download_pinterest_queue,cleanup_queue -n worker@%h -c 2 -P prefork --max-tasks-per-child=10 --max-memory-per-child=400000 --loglevel=warning & \
+                    uv run python -m celery -A src.celery_app.app:celery_app beat --loglevel=warning --pidfile=celerybeat.pid & \
+                    uv run python main.py"
       ]
       depends_on:
         redis:
@@ -76,7 +76,7 @@ services:
       volumes:
         - ./cookies:/app/cookies
       environment:
-        - REFRESH_SITES=tiktok,twitter
+        - REFRESH_SITES=vk
       restart: "no"
 
 volumes:

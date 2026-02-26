@@ -9,6 +9,8 @@ from aiogram.fsm.storage.redis import RedisStorage
 from redis.asyncio import Redis
 
 import logging
+
+
 logger = logging.getLogger(__name__)
 
 from .settings import AppSettings
@@ -19,7 +21,7 @@ from src.databases import (
     UserActivityQueue,
     UserSessionStorage,
     FileIdCache,
-    YouTubeRateLimiter,
+    MediaRateLimiter,
 )
 from src.databases.user_registry import UserRegistry
 from src.core import (
@@ -30,6 +32,7 @@ from src.core import (
     InstagramExtractor,
     TwitterExtractor,
     VKExtractor,
+    PinterestExtractor
 )
 
 
@@ -81,6 +84,9 @@ twitter_extractor = TwitterExtractor(
 vk_extractor = VKExtractor(
     cookie_path=settings.local_storage.browser_cookie_path,
 )
+pinterest_extractor = PinterestExtractor(
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
 
 # ======= Databases =======
 file_id_cache = FileIdCache(
@@ -108,14 +114,15 @@ user_activity_queue = UserActivityQueue(
 )
 user_activity_queue.clear_all()
 
-youtube_rate_limiter = YouTubeRateLimiter(
+user_registry = UserRegistry(
+    db_path="data/users.db",
+)
+
+media_rate_limiter = MediaRateLimiter(
     host=settings.redis.host,
     port=settings.redis.port,
     db=settings.redis.user_activity_db,
-)
-
-user_registry = UserRegistry(
-    db_path="data/users.db",
+    user_registry=user_registry,
 )
 
 

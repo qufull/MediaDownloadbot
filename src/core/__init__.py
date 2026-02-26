@@ -2,7 +2,7 @@
 Модуль загрузчиков и экстракторов медиа-контента.
 
 Предоставляет абстрактные классы и конкретные реализации для работы
-с различными платформами (YouTube, Instagram, Reddit, Rutube, TikTok).
+с различными платформами (YouTube, Instagram, Reddit, Rutube, TikTok, Pinterest, Twitter, VK).
 """
 
 from .downloader import Downloader
@@ -76,13 +76,22 @@ from .extractors.youtube import (
     MassbotsApiError,
     ContentType as YoutubeContentType,
 )
-
-from .extractors.twitter import (
-  TwitterExtractor
+from .extractors.pinterest import (
+    PinterestData,
+    PinterestAudio,
+    PinterestImage,
+    PinterestVideo,
+    PinterestResult,
+    PinterestErrorCode,
+    PinterestExtractor,
+    PinterestSessionError,
+    PinterestContentType,
 )
-
+from .extractors.twitter import (
+    TwitterExtractor
+)
 from .extractors.vk import (
-  VKExtractor
+    VKExtractor
 )
 
 
@@ -164,8 +173,21 @@ __all__ = [
     "YoutubeContentType",
     "MassbotsApiError",
 
+    # Pinterest компоненты
+    "PinterestData",
+    "PinterestAudio",
+    "PinterestImage",
+    "PinterestVideo",
+    "PinterestResult",
+    "PinterestErrorCode",
+    "PinterestExtractor",
+    "PinterestSessionError",
+    "PinterestContentType",
+
+    # Twitter компоненты
     "TwitterExtractor",
 
+    # VK компоненты
     "VKExtractor",
 ]
 

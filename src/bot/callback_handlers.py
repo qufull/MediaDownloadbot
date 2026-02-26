@@ -6,6 +6,7 @@ from aiogram.methods import AnswerCallbackQuery
 from aiogram.types import CallbackQuery, InputMediaPhoto
 from aiogram.utils.chat_action import ChatActionSender
 
+from src.utils.ads import send_vpn_ad
 from .texts import MessageTemplates
 from .common import exetract_image_name
 from .keyboards import get_retry_subscription_keyboard
@@ -25,6 +26,7 @@ from src.celery_app.tasks.video_download_worker import (
     download_twitter_video,
     download_instagram_video,
     download_vk_video,
+    download_pinterest_video
 )
 
 router = Router(name=__name__)
@@ -76,13 +78,14 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
             "tiktok": download_tiktok_video,
             "instagram": download_instagram_video,
             "vk": download_vk_video,
+            "pinterest": download_pinterest_video,
         }
         task = task_map.get(service)
         if not task:
             await send_error(chat_id=chat_id, text=f"Сервис {service} пока не поддерживается для скачивания.")
             return
 
-        chosen_id = _safe_media_id(video)
+        chosen_id = video.get("id")
         if not chosen_id:
             await send_error(chat_id=chat_id, text="У видео нет идентификатора формата (name/id).")
             return
@@ -150,7 +153,7 @@ async def handle_image(callback: CallbackQuery) -> AnswerCallbackQuery:
 
         async with ChatActionSender(bot=bot, action=ChatAction.UPLOAD_PHOTO, chat_id=chat_id):
             await callback.message.answer_media_group(media=media)
-
+        await send_vpn_ad(chat_id)
     except Exception:
         await send_error(chat_id=chat_id, text="Ошибка при отправке изображений.")
         raise

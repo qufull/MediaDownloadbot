@@ -8,6 +8,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
 
+from src.utils.ads import send_vpn_ad
 from ..app import celery_app
 from ..app import celery_event_loop
 from .texts import MessageTemplates
@@ -110,6 +111,7 @@ async def async_download_audio(
                         "[async_download_audio] massbots audio sent via "
                         "api.telegram.org"
                     )
+                    await send_vpn_ad(chat_id)
                     # Удаляем ожидание ПОСЛЕ успешной отправки
                     if waiting_msg:
                         try:
@@ -292,6 +294,7 @@ async def handle_download_result(
                 "[handle_download_result] Аудио успешно отправлено "
                 f"(chat_id={chat_id})"
             )
+        await send_vpn_ad(chat_id)
 
         # Удаляем ожидание ПОСЛЕ успешной отправки аудио
         if message_id:

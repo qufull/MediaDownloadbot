@@ -11,6 +11,6 @@ dependencies = [
     "praw>=7.8.1",
     "pydantic-settings>=2.11.0",
     "redis>=6.4.0",
-    "yt-dlp[default]>=2025.12.08",
+    "yt-dlp[default]>=2026.02.21",
     "massbots",
 ]
