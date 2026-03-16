@@ -1,5 +1,7 @@
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 
 
 def get_subscription_keyboard(missing_subscriptions: list) -> InlineKeyboardMarkup:
@@ -57,3 +59,26 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[[KeyboardButton(text="📤 Рассылка")]],
         resize_keyboard=True
     )
+
+
+def get_tribute_payment_keyboard() -> InlineKeyboardMarkup:
+
+    builder = InlineKeyboardBuilder()
+    builder.add(
+        InlineKeyboardButton(
+            text="⭐️ Купить Premium",
+            url="https://t.me/tribute/app?startapp=sQwR"
+        )
+    )
+    return builder.as_markup()
+
+class BroadcastState(StatesGroup):
+    waiting_for_message = State()
+
+# Клавиатура выбора аудитории
+def get_broadcast_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Отправить ВСЕМ", callback_data="broadcast:all")],
+        [InlineKeyboardButton(text="🎯 Отправить НЕ премиум", callback_data="broadcast:free")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast:cancel")]
+    ])

@@ -6,7 +6,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
 
-from src.config import bot
+from src.config import bot, user_registry
 from src.config import settings
 from src.core import ResultDictAnnotation, AbstractErrorCodeModel
 from src.config import user_activity_queue, media_cache_storage, user_session_storage, file_id_cache
@@ -111,9 +111,10 @@ async def handle_success_response(
         buttons = []
         processor = MediaProcessor()
         preview_url = FSInputFile("src/assets/image_not_found.png")
+        is_user_premium = user_registry.is_user_premium(chat_id) or chat_id in settings.telegram.admin_ids
 
         # 🚀 Передаём cached_heights в parse_videos
-        if video_buttons := processor.parse_videos(data["videos"], cached_heights=cached_heights):
+        if video_buttons := processor.parse_videos(data["videos"], cached_heights=cached_heights, service=service,is_premium=is_user_premium):
             buttons.extend(video_buttons)
 
         if audio_button := processor.parse_audios(data["audios"]):

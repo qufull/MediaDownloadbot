@@ -20,6 +20,7 @@ from src.core import AbstractResultModel
 from src.core.downloader import YoutubeDownloadResult
 from src.config import user_activity_queue
 from src.config import media_cache_storage
+from src.config import media_rate_limiter
 
 from src.utils.telegram_anim import send_waiting, send_error
 
@@ -111,6 +112,7 @@ async def async_download_audio(
                         "[async_download_audio] massbots audio sent via "
                         "api.telegram.org"
                     )
+                    media_rate_limiter.increment(chat_id, service=service)
                     await send_vpn_ad(chat_id)
                     # Удаляем ожидание ПОСЛЕ успешной отправки
                     if waiting_msg:
@@ -290,10 +292,12 @@ async def handle_download_result(
                 caption=caption,
                 audio=FSInputFile(path=result.data.path),
             )
+            media_rate_limiter.increment(chat_id, service=service)
             logger.info(
                 "[handle_download_result] Аудио успешно отправлено "
                 f"(chat_id={chat_id})"
             )
+
         await send_vpn_ad(chat_id)
 
         # Удаляем ожидание ПОСЛЕ успешной отправки аудио

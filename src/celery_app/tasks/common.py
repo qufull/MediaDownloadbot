@@ -59,32 +59,20 @@ class MediaProcessor:
     @staticmethod
     def parse_videos(
             videos: List[VideoDictAnnotation],
-            cached_heights: Optional[Set[int]] = None
+            cached_heights: Optional[Set[int]] = None,
+            service: Optional[str] = None,
+            is_premium: bool = False
     ) -> List[MediaButton]:
-        """
-        Парсит видео данные и создает кнопки для разных качеств.
-
-        Args:
-            videos: Список видео форматов
-            cached_heights: Set качеств (heights) которые уже закэшированы.
-                           Для них добавляется 🚀
-
-        Returns:
-            Список кнопок MediaButton
-        """
+        """Парсит видео и создает кнопки со стандартизированным качеством."""
         import logging
         logger = logging.getLogger(__name__)
 
         if not videos:
-            logger.warning("[parse_videos] Список видео пустой")
             return []
 
         if cached_heights is None:
             cached_heights = set()
 
-        logger.info(f"[parse_videos] Получено видео форматов: {len(videos)}, cached: {cached_heights}")
-
-        # нормализуем данные
         for v in videos:
             if v.get("language"):
                 v["language"] = v["language"].lower().strip()
@@ -93,51 +81,66 @@ class MediaProcessor:
             if "total_bitrate" not in v or v["total_bitrate"] is None:
                 v["total_bitrate"] = 0
 
-        # сортируем по правилу:
-        # 1. has_audio (True > False)
-        # 2. language_preference (больше = лучше)
-        # 3. total_bitrate (больше = лучше)
         videos_sorted = sorted(
             videos,
             key=lambda v: (v.get("has_audio", False), v["language_preference"], v["total_bitrate"]),
             reverse=True
         )
 
-        # группируем по высоте (оставляем лучший вариант для каждой высоты)
+        # Группируем по нормализованному (стандартному) качеству
         video_by_quality: Dict[int, VideoDictAnnotation] = {}
         for video in videos_sorted:
-            height = video.get("height")
-            if height:
-                # если на эту высоту еще нет видео → добавляем лучший
-                if height not in video_by_quality:
-                    video_by_quality[height] = video
-                    logger.debug(
-                        f"[parse_videos] Добавлено: {height}p, has_audio={video.get('has_audio')}, name={video.get('name')}")
+            w = int(video.get("width") or 0)
+            h = int(video.get("height") or 0)
 
-        logger.info(
-            f"[parse_videos] Уникальных качеств: {len(video_by_quality)}, heights: {list(video_by_quality.keys())}")
+            if w == 0 and h == 0:
+                continue
 
-        # создаем кнопки - всегда показываем качество
+            # 1. СЕКРЕТ ШОРТСОВ: берем меньшую сторону (1080x1920 станет 1080)
+            raw_q = min(w, h) if w and h else max(w, h)
+
+            # 2. ПРИТЯГИВАЕМ К СТАНДАРТУ: округляем "кривые" разрешения
+            quality_label = raw_q
+            for std in [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]:
+                if abs(raw_q - std) <= 30:  # Если разница меньше 30 пикселей, считаем за стандарт
+                    quality_label = std
+                    break
+
+            if quality_label not in video_by_quality:
+                video_by_quality[quality_label] = video
+
         buttons = []
         qualities = sorted(video_by_quality.keys(), reverse=True)
 
-        for quality in qualities:
-            video = video_by_quality[quality]
-            height = video.get("height")
+        for quality_label in qualities:
+            video = video_by_quality[quality_label]
+            actual_height = video.get("height")
 
-            # 🚀 добавляем ракету если качество закэшировано
-            if quality in cached_heights:
-                label = f"🚀 {height}p (мгновенно)"
+            # === Проверка на Premium ===
+            premium_services = ["youtube", "rutube", "vk"]
+            is_premium_locked = service in premium_services and quality_label >= 720 and not is_premium
+
+            # 1. Выбираем правильную иконку для начала строки
+            if is_premium_locked:
+                icon = "⭐️"
+            elif actual_height in cached_heights:
+                icon = "🚀"
             else:
-                label = f"🎬 {height}p"
+                icon = "🎬"
 
+            # 2. Формируем финальный текст кнопки (иконка всегда спереди!)
+            if actual_height in cached_heights:
+                label = f"{icon} {quality_label}p (мгновенно)"
+            else:
+                label = f"{icon} {quality_label}p"
+
+            format_id = video.get('name') or video.get('id')
             buttons.append(MediaButton(
                 row=1,
                 label=label,
-                callback_data=f"video:{video['id']}"
+                callback_data=f"video:{format_id}"
             ))
 
-        logger.info(f"[parse_videos] Создано кнопок: {len(buttons)}, с 🚀: {len(cached_heights & set(qualities))}")
         return buttons
 
     @staticmethod

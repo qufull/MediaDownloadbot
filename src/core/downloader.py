@@ -215,7 +215,13 @@ class Downloader:
     def _build_fallback_formats(requested: str) -> List[str]:
         priority = ["1080p", "720p", "480p", "360p", "240p"]
         clean = requested.split(":")[0] if ":" in requested else requested
-        return [f for f in priority if f != clean]
+
+        if clean not in priority:
+            return [f for f in priority if f != clean]
+
+        idx = priority.index(clean)
+
+        return priority[idx + 1:]
 
     @staticmethod
     def _parse_height(format_str: str) -> Optional[int]:
@@ -423,7 +429,13 @@ class Downloader:
         elif service == "vk":
             format_str = video_format_id or "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
         elif service == "reddit":
-            format_str = video_format_id or "bestvideo[ext=mp4]/best"
+            # Если передан конкретный ID (например dash-9),
+            # мы просим yt-dlp взять его И лучшее подходящее аудио
+            if video_format_id and video_format_id != "best":
+                # Используем / для выбора альтернативы, если склейка невозможна
+                format_str = f"{video_format_id}+bestaudio/bestvideo+bestaudio/best"
+            else:
+                format_str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
         else:
             format_str = video_format_id
 

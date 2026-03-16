@@ -24,6 +24,7 @@ from src.core.downloader import YoutubeDownloadResult
 from src.config import user_activity_queue
 from src.config import media_cache_storage
 from src.config import file_id_cache
+from src.config import media_rate_limiter
 
 from src.utils.video_thumbnail import make_video_thumbnail
 from src.utils.telegram_anim import send_waiting, send_error
@@ -99,6 +100,25 @@ def _is_nonempty_file(path: str) -> bool:
 def _resolve_media(value: str):
     p = Path(value)
     return FSInputFile(str(p)) if p.exists() else value
+
+
+def _get_standard_quality(width: int, height: int) -> int:
+    """Превращает любые кривые размеры в красивый стандарт (1080, 720, 480)."""
+    w = int(width) if width else 0
+    h = int(height) if height else 0
+
+    if w > 0 and h > 0:
+        raw_q = min(w, h)
+    elif h > 0:
+        mapping = {1920: 1080, 1280: 720, 854: 480, 640: 360, 2560: 1440, 3840: 2160}
+        raw_q = mapping.get(h, h)
+    else:
+        raw_q = w
+
+    for std in [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]:
+        if abs(raw_q - std) <= 50:
+            return std
+    return raw_q
 
 # ─── Main download function ─────────────────────────────────────────
 
@@ -178,9 +198,10 @@ async def async_download_video(
                 original_url = url
                 author_name = "Unknown"
 
+            display_quality = _get_standard_quality(width, height)
             caption = MessageTemplates.DOWNLOAD_VIDEO_CAPTION.format(
                 width=width or "?",
-                height=height or "?",
+                height=display_quality or "?",
                 service=service,
                 url=original_url,
                 botname=settings.telegram.name,
@@ -201,6 +222,7 @@ async def async_download_video(
                         "[async_download_video] massbots video "
                         "sent via api.telegram.org"
                     )
+                    media_rate_limiter.increment(chat_id, service=service)
                     # Кэшируем file_id
                     file_id_cache.store_file_id(
                         url=url,
@@ -214,6 +236,7 @@ async def async_download_video(
                             await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
                         except Exception:
                             pass
+                    await send_vpn_ad(chat_id)
                 else:
                     logger.error(
                         f"[async_download_video] sendVideo response not ok: {resp}"
@@ -292,9 +315,10 @@ async def send_cached_video(
             original_url = url
             author_name = "Unknown"
 
+        display_quality = _get_standard_quality(width, height)
         caption = MessageTemplates.DOWNLOAD_VIDEO_CAPTION.format(
-            width=width,
-            height=height,
+            width=width or "?",
+            height=display_quality or "?",
             service=service,
             url=original_url,
             botname=settings.telegram.name,
@@ -302,9 +326,9 @@ async def send_cached_video(
         )
 
         async with ChatActionSender(
-            bot=bot,
-            chat_id=chat_id,
-            action=ChatAction.UPLOAD_VIDEO,
+                bot=bot,
+                chat_id=chat_id,
+                action=ChatAction.UPLOAD_VIDEO,
         ):
             send_kwargs = dict(
                 chat_id=chat_id,
@@ -316,7 +340,33 @@ async def send_cached_video(
                 send_kwargs["width"] = width
             if height and height > 0:
                 send_kwargs["height"] = height
-            await bot.send_video(**send_kwargs)
+
+            # --- ИСПРАВЛЕНИЕ ОШИБКИ КЭША ---
+            try:
+                # Пытаемся отправить через локальный сервер (для TikTok, IG, ВК и т.д.)
+                await bot.send_video(**send_kwargs)
+            except Exception as bot_err:
+                if "wrong file identifier" in str(bot_err).lower():
+                    logger.warning(
+                        "[send_cached_video] Локальный API не знает этот file_id. Пробуем через публичный API...")
+                    # Отправляем через публичный API (для закэшированного YouTube)
+                    resp = _send_video_via_telegram_api(
+                        bot_token=settings.telegram.token,
+                        chat_id=chat_id,
+                        file_id=file_id,
+                        caption=caption,
+                        width=width or 0,
+                        height=height or 0,
+                    )
+                    if not resp.get("ok"):
+                        raise Exception(f"Ошибка публичного API при отправке кэша: {resp}")
+                else:
+                    # Если ошибка другая (например, юзер заблокировал бота), прокидываем её дальше
+                    raise bot_err
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
+            media_rate_limiter.increment(chat_id, service=service)
+
         logger.info("[send_cached_video] Видео отправлено из кэша")
         await send_vpn_ad(chat_id)
     except Exception as e:
@@ -392,9 +442,10 @@ async def handle_download_result(
             height = probe_h
             logger.info(f"[handle_download_result] ffprobe dimensions: {width}x{height}")
 
+    display_quality = _get_standard_quality(width, height)
     caption = MessageTemplates.DOWNLOAD_VIDEO_CAPTION.format(
         width=width or "?",
-        height=height or "?",
+        height=display_quality or "?",
         service=service,
         url=original_url,
         botname=settings.telegram.name,
@@ -439,6 +490,7 @@ async def handle_download_result(
                 sent_message = await bot.send_video(**kwargs)
 
             if sent_message and sent_message.video:
+                media_rate_limiter.increment(chat_id, service=service)
                 file_id_cache.store_file_id(
                     url=url,
                     height=height,

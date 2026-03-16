@@ -377,83 +377,39 @@ class RedditExtractor(AbstractExtractor):
         logger.info(f"Успешно извлечено видео с {len(self._data.videos)} видео-форматами и {len(self._data.audios)} аудио-форматами")
 
     def _extract_media_formats(self, data: dict) -> None:
-        """Извлечение доступных видео и аудио форматов."""
         video_count = 0
         audio_count = 0
         for format in data.get("formats", []):
-            if (
-                format["ext"] == "mp4"
-                and format["vcodec"] == "h264"
-            ):
+            vcodec = format.get("vcodec", "none")
+            acodec = format.get("acodec", "none")
+            ext = format.get("ext", "")
+
+            # Проверяем наличие видео-потока (любой рабочий mp4 кодек)
+            if vcodec != "none" and (ext == "mp4" or "avc" in vcodec):
                 self._data.videos.append(
                     RedditVideo(
                         id=str(uuid4()),
                         url=format["url"],
                         name=format["format_id"],
-                        has_audio=False if format["acodec"] == "none" else True,
+                        has_audio=(acodec != "none"),
                         fps=format.get("fps"),
                         width=format.get("width"),
                         height=format.get("height"),
-                        language=format.get("language"),
                         total_bitrate=format.get("tbr"),
-                        language_preference=format.get("language_preference"),
                     )
                 )
                 video_count += 1
-                
-            elif (
-                format.get("ext") == "mp4" 
-                and format.get("vcodec", "").startswith("avc1")
-            ):
-                self._data.videos.append(
-                    RedditVideo(
-                        id=str(uuid4()),
-                        url=format["url"],
-                        name=format["format_id"],
-                        has_audio=False if format["acodec"] == "none" else True,
-                        fps=format.get("fps"),
-                        width=format.get("width"),
-                        height=format.get("height"),
-                        language=format.get("language"),
-                        total_bitrate=format.get("tbr"),
-                        language_preference=format.get("language_preference"),
-                    )
-                )
-                video_count += 1
-                
-            elif (
-                format.get("ext") == "m4a"
-                and format.get("vcodec") == "none"
-                and format.get("acodec").startswith("mp4a")
-            ):
+
+            # Проверяем наличие аудио-потока (m4a или mp4 контейнеры)
+            elif vcodec == "none" and acodec != "none":
                 self._data.audios.append(
                     RedditAudio(
                         id=str(uuid4()),
                         url=format["url"],
                         name=format["format_id"],
-                        language=format.get("language"),
-                        language_preference=format.get("language_preference"),
                     )
                 )
                 audio_count += 1
-                
-            elif (
-                format.get("ext") == "m4a"
-                and format.get("vcodec") == "none"
-                and format.get("acodec").startswith("aac")
-            ):
-                self._data.audios.append(
-                    RedditAudio(
-                        id=str(uuid4()),
-                        url=format["url"],
-                        name=format["format_id"],
-                        language=format.get("language"),
-                        language_preference=format.get("language_preference"),
-                    )
-                )
-                audio_count += 1
-                
-        logger.debug(f"Извлечено {video_count} видео-форматов и {audio_count} аудио-форматов")
                   
     def _extract_thumbnails(self, data: dict) -> None:
         """Извлечение миниатюр."""

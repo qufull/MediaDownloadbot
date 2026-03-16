@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, List
 
 from aiogram import Router, F
@@ -5,17 +6,20 @@ from aiogram.enums import ChatAction, ChatMemberStatus
 from aiogram.methods import AnswerCallbackQuery
 from aiogram.types import CallbackQuery, InputMediaPhoto
 from aiogram.utils.chat_action import ChatActionSender
+from aiogram.types import FSInputFile
+import random
 
 from src.utils.ads import send_vpn_ad
+from src.utils.utils import get_ref_stats_text
 from .texts import MessageTemplates
 from .common import exetract_image_name
-from .keyboards import get_retry_subscription_keyboard
+from .keyboards import get_retry_subscription_keyboard, get_tribute_payment_keyboard
 
-from src.config import bot, settings
+from src.config import bot, settings, user_registry
 from src.core import ImageDictAnnotation
-from src.config import user_session_storage, user_activity_queue
+from src.config import user_session_storage, user_activity_queue, media_rate_limiter
 
-from src.utils.telegram_anim import send_error  # ✅ добавили
+from src.utils.telegram_anim import send_error
 
 from src.celery_app.tasks.audio_download_worker import download_audio
 from src.celery_app.tasks.video_download_worker import (
@@ -36,27 +40,88 @@ def _safe_media_id(item: dict) -> str | None:
     """Берём name, если есть, иначе id. Это твой контракт по всему проекту."""
     return (item.get("name") or item.get("id") or "").strip() or None
 
+async def process_queue_and_download(chat_id, message_id, url, width, height, chosen_id, merge_audio, delay, task_func):
+    """Фоновая задача: держит юзера в очереди, показывает таймер, затем отдает в скачивание"""
+    # 1. Отправляем видео ТАЙМЕРА
+    try:
+        timer_msg = await bot.send_video(
+            chat_id=chat_id,
+            video=FSInputFile("src/assets/timer.mp4"),
+            caption=(
+                "⏳ <b>Ваше видео поставлено в очередь!</b>\n"
+                f"Ожидаемое время до начала выгрузки: ~3 мин.\n\n"
+                "⭐️ <i>Premium-пользователям доступна выгрузка моментально и без очереди!</i>"
+            ),
+            parse_mode="HTML",
+            reply_to_message_id=message_id,
+            reply_markup=get_tribute_payment_keyboard()  # Сразу даем кнопку купить!
+        )
+    except Exception:
+        timer_msg = None
+
+    # 2. Ждем нужное время. Aiogram может держать так хоть 10 000 юзеров, не нагружая сервер!
+    await asyncio.sleep(delay)
+
+    # 3. Время вышло -> Удаляем сообщение с таймером
+    if timer_msg:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=timer_msg.message_id)
+        except Exception:
+            pass
+
+    # 4. Отправляем задачу в Celery (начнется загрузка, появится голубь)
+    task_func.delay(
+        url=url, width=width, height=height, chat_id=chat_id,
+        message_id=message_id, video_id=chosen_id, merge_audio=merge_audio
+    )
 
 @router.callback_query(F.data.startswith("video"))
 async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
     chat_id = callback.message.chat.id
-
-    # Всегда снимаем "часики" на кнопке
     await callback.answer()
-
-    if user_activity_queue.get_download(chat_id=chat_id):
-        await send_error(chat_id=chat_id, text=MessageTemplates.CALLBACK_PROCESSING_MESSAGE)
-        return
 
     session = user_session_storage.get_session(chat_id=chat_id)
     if session is None:
         await send_error(chat_id=chat_id, text=MessageTemplates.CALLBACK_SESSION_EXPIRED)
         return
 
+    service = session["service"]
+
+    # 2. ПРОВЕРЯЕМ ЛИМИТЫ (обязательно передаем service)
+    if callback.from_user.id not in settings.telegram.admin_ids:
+        if not media_rate_limiter.can_download(chat_id, service=service):
+
+            # Если это обычный пользователь (не премиум)
+            if not user_registry.is_user_premium(callback.from_user.id):
+                limit_text = await get_ref_stats_text(callback.from_user.id)
+                promo_text = (
+                    f"{limit_text}\n\n"
+                    "⭐️ <b>Хотите качать без ограничений?</b>\n"
+                    "Оформите Premium-подписку и забудьте о лимитах и низком качестве!"
+                )
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=promo_text,
+                    reply_markup=get_tribute_payment_keyboard(),
+                    parse_mode="HTML"
+                )
+            # Если это Premium (значит он исчерпал лимит 30 видео на YouTube)
+            else:
+                text = (
+                    "⚠️ <b>Дневной лимит YouTube исчерпан.</b>\n"
+                    "Для безопасности бота даже на Premium действует лимит: 30 YouTube-видео в день. "
+                    "Остальные сервисы (TikTok, Reels и др.) остаются безлимитными. Возвращайтесь завтра!"
+                )
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            return
+
+    if user_activity_queue.get_download(chat_id=chat_id):
+        await send_error(chat_id=chat_id, text=MessageTemplates.CALLBACK_PROCESSING_MESSAGE)
+        return
+
     try:
         _, video_id = callback.data.split(":", 1)
-        video = next((v for v in session["media_data"]["videos"] if v.get("id") == video_id), None)
-
+        video = next((v for v in session["media_data"]["videos"] if str(_safe_media_id(v)) == str(video_id)), None)
         if not video:
             await send_error(chat_id=chat_id, text="Не нашла выбранный формат видео. Отправь ссылку заново.")
             return
@@ -65,8 +130,51 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
         width = video.get("width")
         height = video.get("height")
         service = session["service"]
+
+        w = int(width) if width else 0
+        h = int(height) if height else 0
+
+        if w > 0 and h > 0:
+            quality = min(w, h)
+        elif h > 0:
+            mapping = {1920: 1080, 1280: 720, 854: 480, 640: 360, 2560: 1440, 3840: 2160}
+            quality = mapping.get(h, h)
+        else:
+            quality = w
+
+            # === НОВОЕ: Проверяем сервис ===
+        premium_services = ["youtube", "rutube", "vk"]
+
+        # Блокируем ТОЛЬКО если это ютуб/рутуб/вк И качество >= 720
+        if service in premium_services and quality >= 720:
+            if not user_registry.is_user_premium(callback.from_user.id) and callback.from_user.id not in settings.telegram.admin_ids:
+                promo_text = (
+                    f"⭐️ Высокое качество (720p и выше) доступно только по Premium-подписке всего за 100р / мес!\n\n"
+                    "🔥 PREMIUM\n\n"
+                    "✅ 720p / 1080p\n"
+                    "✅ Без рекламы\n"
+                    "✅ Приоритет загрузки\n\n"
+                    "_________________\n\n"
+                    "🆓 FREE\n\n"
+                    "✅ ≤ 640p\n"
+                    "❌ 720p / 1080p\n"
+                    "❌ Без рекламы\n"
+                    "❌ Приоритет загрузки\n"
+
+                )
+
+                await callback.message.answer(
+                    promo_text,
+                    reply_markup=get_tribute_payment_keyboard(),
+                    parse_mode="HTML"
+                )
+                try:
+                    user_activity_queue.delete_download(chat_id=chat_id)
+                except Exception:
+                    pass
+                return
+
         message_id = callback.message.message_id
-        author_name = session["media_data"].get("author_name", "Unknown")
 
         user_activity_queue.create_download(url=url, chat_id=chat_id, service=service)
 
@@ -85,33 +193,36 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
             await send_error(chat_id=chat_id, text=f"Сервис {service} пока не поддерживается для скачивания.")
             return
 
-        chosen_id = video.get("id")
+        chosen_id = _safe_media_id(video)
         if not chosen_id:
             await send_error(chat_id=chat_id, text="У видео нет идентификатора формата (name/id).")
             return
 
         merge_audio = True if not video.get("has_audio", False) else False
 
-        task.delay(
-            url=url,
-            width=width,
-            height=height,
-            chat_id=chat_id,
-            message_id=message_id,
-            video_id=chosen_id,   # ✅ теперь не падает на name
-            merge_audio=merge_audio,
-        )
+        is_premium = user_registry.is_user_premium(callback.from_user.id)
+        is_admin = callback.from_user.id in settings.telegram.admin_ids
+
+        if is_premium or is_admin:
+            # Премиум: отдаем команду в Celery моментально
+            task.delay(
+                url=url, width=width, height=height, chat_id=chat_id,
+                message_id=message_id, video_id=chosen_id, merge_audio=merge_audio
+            )
+        else:
+            # Бесплатный юзер: генерируем очередь от 60 до 180 секунд (1-3 минуты)
+            delay = random.randint(60, 180)
+            # Отправляем в нашу фоновую функцию
+            asyncio.create_task(
+                process_queue_and_download(
+                    chat_id, message_id, url, width, height, chosen_id, merge_audio, delay, task
+                )
+            )
 
     except Exception as e:
-        # Любая ошибка -> гифка
         await send_error(chat_id=chat_id, text="Ошибка при обработке видео. Попробуй ещё раз.")
+        user_activity_queue.delete_download(chat_id=chat_id)
         raise
-    finally:
-        # ✅ Критично: всегда снимаем блокировку
-        try:
-            user_activity_queue.delete_download(chat_id=chat_id)
-        except Exception:
-            pass
 
 
 @router.callback_query(F.data.startswith("image"))

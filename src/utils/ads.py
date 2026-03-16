@@ -11,7 +11,7 @@ async def send_vpn_ad(chat_id: int) -> None:
     text = (
         f"💛 Наш <a href='{vpn_url}'>Skynet VPN</a> — лучший ВПН!\n"
         "<blockquote>"
-        "🔮 Обходки глушилок ❞\n"
+        "🔮 Обход глушилок ❞\n"
         "🌍 Разные локации\n"
         "📱 Несколько устройств\n"
         "🌐 Безлимит на трафик\n"

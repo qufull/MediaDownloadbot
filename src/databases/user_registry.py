@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+import time
 from pathlib import Path
 from typing import List, Optional
 from contextlib import contextmanager
@@ -26,7 +27,7 @@ class UserRegistry:
             conn.close()
 
     def _init_db(self):
-        """Инициализация таблицы с новыми колонками для рефералов."""
+        """Инициализация таблицы с новыми колонками для премиума и юзернейма."""
         with self._get_connection() as conn:
             conn.execute("""
                          CREATE TABLE IF NOT EXISTS users
@@ -35,6 +36,8 @@ class UserRegistry:
                              INTEGER
                              PRIMARY
                              KEY,
+                             username
+                             TEXT,
                              is_active
                              INTEGER
                              DEFAULT
@@ -44,42 +47,106 @@ class UserRegistry:
                              bonus_limit
                              INTEGER
                              DEFAULT
+                             0,
+                             is_premium
+                             INTEGER
+                             DEFAULT
                              0
                          )
                          """)
-            logger.debug("Таблица users проверена/создана")
 
-    def add_user(self, user_id: int, referrer_id: Optional[int] = None) -> bool:
-        """
-        Регистрирует пользователя.
-        Если пользователь новый и пришел по ссылке — начисляет бонус пригласившему.
-        """
+            try:
+                conn.execute("ALTER TABLE users ADD COLUMN premium_expires INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+            logger.debug("Таблица users проверена/обновлена")
+
+    def add_user(self, user_id: int, username: Optional[str] = None, referrer_id: Optional[int] = None) -> bool:
+        """Регистрирует пользователя (теперь с юзернеймом)."""
         try:
             with self._get_connection() as conn:
-                # 1. Проверяем, есть ли уже такой пользователь
                 cursor = conn.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
                 if cursor.fetchone():
-                    logger.debug(f"Пользователь {user_id} уже зарегистрирован")
+                    # Если юзер уже есть, просто обновим его юзернейм (вдруг он его сменил)
+                    conn.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
                     return False
 
-                    # 2. Добавляем нового пользователя
                 conn.execute(
-                    "INSERT INTO users (user_id, is_active, referred_by) VALUES (?, 1, ?)",
-                    (user_id, referrer_id)
+                    "INSERT INTO users (user_id, username, is_active, referred_by) VALUES (?, ?, 1, ?)",
+                    (user_id, username, referrer_id)
                 )
 
-                # 3. Если есть пригласитель (и это не сам себя) — начисляем ему +2
                 if referrer_id and referrer_id != user_id:
                     conn.execute(
                         "UPDATE users SET bonus_limit = bonus_limit + 2 WHERE user_id = ?",
                         (referrer_id,)
                     )
-                    logger.info(f"Бонус +2 начислен пользователю {referrer_id} за приглашение {user_id}")
-
                 return True
         except Exception as e:
             logger.error(f"Ошибка при регистрации user_id={user_id}: {e}")
             return False
+
+    def get_all_users(self) -> list[int]:
+        """Возвращает ID всех пользователей бота."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute("SELECT user_id FROM users")
+                return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Ошибка получения всех юзеров: {e}")
+            return []
+
+    def get_free_users(self) -> list[int]:
+        """Возвращает ID только бесплатных пользователей (у кого нет Premium или он истек)."""
+        import time
+        current_time = int(time.time())
+        try:
+            with self._get_connection() as conn:
+                # Берем тех, у кого is_premium = 0 ИЛИ время подписки уже вышло
+                cursor = conn.execute(
+                    "SELECT user_id FROM users WHERE is_premium = 0 OR (premium_expires > 0 AND premium_expires < ?)",
+                    (current_time,)
+                )
+                return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Ошибка получения бесплатных юзеров: {e}")
+            return []
+
+    def is_user_premium(self, user_id: int) -> bool:
+        """Проверяет, есть ли премиум, и автоматически забирает его, если время вышло."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute("SELECT is_premium, premium_expires FROM users WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+
+                if not row:
+                    return False
+
+                is_premium, expires = row
+
+                if is_premium == 1:
+                    # Если время еще не вышло (или expires == 0 для вечного према админам)
+                    if expires == 0 or expires > int(time.time()):
+                        return True
+                    else:
+                        # ВРЕМЯ ВЫШЛО! Снимаем премиум
+                        conn.execute("UPDATE users SET is_premium = 0, premium_expires = 0 WHERE user_id = ?",
+                                     (user_id,))
+                        return False
+
+                return False
+        except Exception as e:
+            return False
+
+    def set_premium(self, user_id: int, days: int = 30):
+        """Выдает премиум на указанное количество дней."""
+        # Вычисляем время окончания: текущее время + 30 дней (в секундах)
+        expires = int(time.time()) + (days * 24 * 60 * 60)
+        try:
+            with self._get_connection() as conn:
+                conn.execute("UPDATE users SET is_premium = 1, premium_expires = ? WHERE user_id = ?", (expires, user_id))
+        except Exception as e:
+            logger.error(f"Ошибка выдачи премиума {user_id}: {e}")
 
     def get_bonus(self, user_id: int) -> int:
         """Получить текущий бонусный лимит скачиваний пользователя."""

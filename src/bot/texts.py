@@ -121,11 +121,10 @@ class MessageTemplates:
         "Пожалуйста, отправьте ссылку заново 🔄"
     )
 
-    YOUTUBE_DAILY_LIMIT_REACHED = (
+    DAILY_LIMIT_REACHED = (
         "🚫 <b>Дневной лимит исчерпан</b>\n\n"
-        "Вы уже скачали <b>{used}</b> из <b>{limit}</b> YouTube-видео сегодня.\n"
+        "Вы уже скачали <b>{used}</b> видео сегодня.\n"
         "Лимит обновится в <b>00:00 (МСК)</b>.\n\n"
-        "💡 Скачивание с других платформ не ограничено!"
     )
 
     CALLBACK_VIDEO_CAPTION = (
