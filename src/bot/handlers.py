@@ -3,7 +3,7 @@ from typing import List, Dict
 from urllib.parse import urlparse
 
 from aiogram import Router, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto,InputMediaVideo,CallbackQuery,InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto,InputMediaVideo,CallbackQuery,InlineKeyboardMarkup, InlineKeyboardButton, InlineKeyboardBuilder
 from aiogram.filters import CommandObject, CommandStart, Command
 from aiogram.methods import SendMessage
 from aiogram.fsm.context import FSMContext
@@ -294,6 +294,27 @@ async def handle_help(message: Message) -> SendMessage:
     await message.answer(text=help_text)
 
 
+@router.message(Command("support"))
+async def support_command(message:Message):
+    builder = InlineKeyboardBuilder()
+
+    # Вставь сюда юзернейм твоего аккаунта поддержки (без @)
+    support_username = "skynetaivpn_support"
+
+    # Создаем кнопку-ссылку
+    builder.button(
+        text="👨‍💻 Написать специалисту",
+        url=f"https://t.me/{support_username}"
+    )
+
+    await message.answer(
+        "📝 **Служба поддержки**\n\n"
+        "Если у вас возникли вопросы, проблемы с оплатой или вы нашли баг, "
+        "пожалуйста, напишите нам. Мы ответим в кратчайшие сроки!",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+
 @router.message(Command("donate"))
 async def handle_donate(message: Message) -> SendMessage:
     """Обработчик команды /donate — поддержка проекта."""
@@ -342,7 +363,7 @@ async def handle_url_message(message: Message) -> SendMessage:
                     )
                     await message.answer(
                         text=promo_text,
-                        reply_markup=get_tribute_payment_keyboard(),
+                        reply_markup=get_tribute_payment_keyboard(settings.tribute.url),
                         parse_mode="HTML"
                     )
                 # Если это Premium (исчерпал лимит 30 видео на YouTube)

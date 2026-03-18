@@ -17,7 +17,7 @@ from .keyboards import get_retry_subscription_keyboard, get_tribute_payment_keyb
 
 from src.config import bot, settings, user_registry
 from src.core import ImageDictAnnotation
-from src.config import user_session_storage, user_activity_queue, media_rate_limiter
+from src.config import user_session_storage, user_activity_queue, media_rate_limiter,settings
 
 from src.utils.telegram_anim import send_error
 
@@ -54,7 +54,7 @@ async def process_queue_and_download(chat_id, message_id, url, width, height, ch
             ),
             parse_mode="HTML",
             reply_to_message_id=message_id,
-            reply_markup=get_tribute_payment_keyboard()  # Сразу даем кнопку купить!
+            reply_markup=get_tribute_payment_keyboard(settings.tribute.url)  # Сразу даем кнопку купить!
         )
     except Exception:
         timer_msg = None
@@ -102,7 +102,7 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
                 await bot.send_message(
                     chat_id=chat_id,
                     text=promo_text,
-                    reply_markup=get_tribute_payment_keyboard(),
+                    reply_markup=get_tribute_payment_keyboard(settings.tribute.url),
                     parse_mode="HTML"
                 )
             # Если это Premium (значит он исчерпал лимит 30 видео на YouTube)
@@ -149,7 +149,7 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
         if service in premium_services and quality >= 720:
             if not user_registry.is_user_premium(callback.from_user.id) and callback.from_user.id not in settings.telegram.admin_ids:
                 promo_text = (
-                    f"⭐️ Высокое качество (720p и выше) доступно только по Premium-подписке всего за 100р / мес!\n\n"
+                    f"⭐️ Высокое качество (720p и выше) доступно только по Premium-подписке!\n\n"
                     "🔥 PREMIUM\n\n"
                     "✅ 720p / 1080p\n"
                     "✅ Без рекламы\n"
@@ -165,7 +165,7 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
 
                 await callback.message.answer(
                     promo_text,
-                    reply_markup=get_tribute_payment_keyboard(),
+                    reply_markup=get_tribute_payment_keyboard(settings.tribute.url),
                     parse_mode="HTML"
                 )
                 try:

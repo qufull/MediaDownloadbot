@@ -61,13 +61,13 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def get_tribute_payment_keyboard() -> InlineKeyboardMarkup:
+def get_tribute_payment_keyboard(url) -> InlineKeyboardMarkup:
 
     builder = InlineKeyboardBuilder()
     builder.add(
         InlineKeyboardButton(
             text="⭐️ Купить Premium",
-            url="https://t.me/tribute/app?startapp=sQwR"
+            url=str(url)
         )
     )
     return builder.as_markup()

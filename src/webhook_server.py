@@ -1,23 +1,50 @@
 import logging
-from fastapi import FastAPI, Request
-from src.config import user_registry, bot
+import hmac
+import hashlib
+import json
+from fastapi import FastAPI, Request, HTTPException
+
+from settings import AppSettings
+from src.config import user_registry, bot, settings
 
 logger = logging.getLogger("webhook_server")
 app = FastAPI()
 
+TRIBUTE_SECRET = settings.tribute.api_secret
+
+def verify_tribute_signature(body: bytes, signature: str, secret: str) -> bool:
+    """Функция для проверки криптографической подписи от Tribute"""
+    if not signature:
+        return False
+
+    expected_signature = hmac.new(
+        key=secret.encode('utf-8'),
+        msg=body,
+        digestmod=hashlib.sha256
+    ).hexdigest()
+
+    return hmac.compare_digest(expected_signature, signature)
+
 
 @app.post("/tribute")
 async def tribute_webhook(request: Request):
+    body_bytes = await request.body()
+
+    signature = request.headers.get("trbt-signature")
+
+    if not verify_tribute_signature(body_bytes, signature, TRIBUTE_SECRET):
+        logger.warning(f"Неверная подпись вебхука от Tribute. IP: {request.client.host}")
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
     try:
-        data = await request.json()
-        logger.info(f"[Tribute] Получен вебхук: {data}")
-    except Exception:
+        data = json.loads(body_bytes)
+        event_name = data.get("name", "Неизвестное событие")
+        logger.info(f"[Tribute] Получен и проверен вебхук: {event_name}")
+    except json.JSONDecodeError:
         return {"status": "error", "message": "Invalid JSON"}
 
-    # Достаем название события из поля "name"
+    # Достаем нужные данные
     event_name = data.get("name")
-
-    # Все нужные нам данные лежат внутри объекта "payload"
     payload = data.get("payload", {})
     user_id = payload.get("telegram_user_id")
 
@@ -26,34 +53,33 @@ async def tribute_webhook(request: Request):
 
     user_id = int(user_id)
 
-    # 1. Если это новая ПОДПИСКА или её успешное ПРОДЛЕНИЕ
-    if event_name in ["new_subscription", "renewed_subscription"]:
-        # Выдаем премиум на 31 день (с запасом в 1 день, чтобы бот не отрубил права раньше, чем Tribute спишет деньги за следующий месяц)
-        user_registry.set_premium(user_id, days=31)
+    if event_name == "new_digital_product":
 
-        # Разный текст для новой покупки и для автопродления
-        if event_name == "new_subscription":
-            text = "🎉 <b>Подписка успешно оформлена!</b>\n\n⭐️ Вам выдан Premium! Теперь вам доступно скачивание видео в максимальном качестве."
-        else:
-            text = "🔄 <b>Ваша Premium-подписка успешно продлена!</b>\nСпасибо, что остаетесь с нами."
+        days_to_add = 30
+
+        user_registry.set_premium(user_id, days=days_to_add)
+
+        text = (
+            "🎉 <b>Оплата прошла успешно!</b>\n\n"
+            f"⭐️ Вам выдан Premium на {days_to_add} дней!\n"
+            "Теперь вам доступно скачивание видео в максимальном качестве без очередей и рекламы."
+        )
 
         try:
             await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"Не удалось отправить сообщение {user_id}: {e}")
 
-    # 2. Если подписка ОТМЕНЕНА (пользователь сам отменил или кончились деньги)
-    elif event_name == "cancelled_subscription":
-        # Сразу обнуляем премиум
+    elif event_name == "digital_product_refunded":
         user_registry.set_premium(user_id, days=0)
 
         try:
             await bot.send_message(
                 chat_id=user_id,
-                text="⚠️ <b>Действие Premium-подписки завершено.</b>\nДоступ к максимальному качеству. Вы можете возобновить подписку в любой момент!",
+                text="⚠️ <b>Действие Premium-подписки отменено (возврат средств).</b>\nДля доступа к максимальному качеству вы можете приобрести товар заново.",
                 parse_mode="HTML"
             )
-        except Exception as e:
+        except Exception:
             pass
 
     return {"status": "ok"}

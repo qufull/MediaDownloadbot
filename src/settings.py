@@ -44,7 +44,6 @@ class LocalStorageSettings(BaseSettings):
 
 class ProxySettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
-    # Формат: http://user:pass@host:port или http://host:port
     rutube_proxy: Annotated[Optional[str], Field(default=None, validation_alias="rutube_proxy")]
     youtube_proxy: Annotated[Optional[str], Field(default=None, validation_alias="YOUTUBE_PROXY")]
 
@@ -53,6 +52,11 @@ class MassbotsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
     token: Annotated[Optional[str], Field(default=None, validation_alias="massbots_token")]
     bot_id: Annotated[Optional[str], Field(default=None, validation_alias="massbots_bot_id")]
+
+class TributeSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    api_secret: Annotated[str, Field(validation_alias="tribute_api_key")]
+    url: Annotated[str, Field(validation_alias="tribute_url")]
 
 
 class AppSettings:
@@ -63,6 +67,7 @@ class AppSettings:
     local_storage: LocalStorageSettings
     proxy: ProxySettings
     massbots: MassbotsSettings
+    tribute: TributeSettings
 
     def __init__(self):
         self.telegram = TelegramSettings()
@@ -72,3 +77,4 @@ class AppSettings:
         self.local_storage = LocalStorageSettings()
         self.proxy = ProxySettings()
         self.massbots = MassbotsSettings()
+        self.tribute = TributeSettings()
