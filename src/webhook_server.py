@@ -4,7 +4,6 @@ import hashlib
 import json
 from fastapi import FastAPI, Request, HTTPException
 
-from settings import AppSettings
 from src.config import user_registry, bot, settings
 
 logger = logging.getLogger("webhook_server")

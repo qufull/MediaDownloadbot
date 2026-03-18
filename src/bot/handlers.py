@@ -3,7 +3,8 @@ from typing import List, Dict
 from urllib.parse import urlparse
 
 from aiogram import Router, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto,InputMediaVideo,CallbackQuery,InlineKeyboardMarkup, InlineKeyboardButton, InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto,InputMediaVideo,CallbackQuery,InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandObject, CommandStart, Command
 from aiogram.methods import SendMessage
 from aiogram.fsm.context import FSMContext
