@@ -11,8 +11,11 @@ dependencies = [
     "praw>=7.8.1",
     "pydantic-settings>=2.11.0",
     "redis>=6.4.0",
-    "yt-dlp[default]>=2026.02.21",
+    "yt-dlp[default]>=2026.03.17",
     "massbots",
     "fastapi",
     "uvicorn",
+    "google-api-python-client>=2.100.0",
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.2.0",
 ]

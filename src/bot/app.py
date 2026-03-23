@@ -18,6 +18,7 @@ async def set_bot_commands() -> None:
         commands = [
             BotCommand(command="start", description="🚀 Начать работу с ботом"),
             BotCommand(command="help", description="❓ Помощь"),
+            BotCommand(command="support", description="🛠 Написать в поддержку"),
             BotCommand(command="ref", description="🎁 Пригласить друга"),
             BotCommand(command="donate", description="💜 Поддержать проект"),
             BotCommand(command="products", description="📦 Другие продукты")

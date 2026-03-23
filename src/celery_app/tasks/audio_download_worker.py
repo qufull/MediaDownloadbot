@@ -1,5 +1,8 @@
+import asyncio
 import logging
 import json
+import threading
+import time as _time
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -7,6 +10,7 @@ import urllib.error
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
+from src.celery_app.tasks.video_download_worker import _video_input
 
 from src.utils.ads import send_vpn_ad
 from ..app import celery_app
@@ -23,6 +27,7 @@ from src.config import media_cache_storage
 from src.config import media_rate_limiter
 
 from src.utils.telegram_anim import send_waiting, send_error
+from .video_download_worker import _fmt_bytes, _make_progress_caption
 
 logger = logging.getLogger(__name__)
 
@@ -41,30 +46,97 @@ async def async_download_audio(
         f"service={service}, url={url}, direct={direct}"
     )
 
+    waiting_msg = None
+    progress_msg = None
     try:
-        # Анимация ожидания (load.mp4)
         waiting_msg = await send_waiting(
             chat_id=chat_id,
             text=MessageTemplates.DOWNLOAD_STARTED,
             reply_to_message_id=message_id,
         )
 
-        async with ChatActionSender(
-            bot=bot,
-            chat_id=chat_id,
-            action=ChatAction.RECORD_VOICE,
-        ):
-            if not direct:
-                result = downloader.download_audio(
+        if not direct:
+            progress_state = {
+                "percent": 0.0,
+                "downloaded": 0,
+                "total": 0,
+                "speed": 0.0,
+                "done": False,
+                "lock": threading.Lock(),
+            }
+
+            def _progress_callback(percent: float, downloaded: int, total: int, speed: float) -> None:
+                with progress_state["lock"]:
+                    progress_state["percent"] = percent
+                    progress_state["downloaded"] = downloaded
+                    progress_state["total"] = total
+                    progress_state["speed"] = float(speed or 0)
+                    if percent >= 99.9:
+                        progress_state["done"] = True
+
+            progress_msg = await bot.send_message(
+                chat_id=chat_id,
+                text=_make_progress_caption(0.0, 0, 0, 0),
+                parse_mode="HTML",
+                reply_to_message_id=waiting_msg.message_id if waiting_msg else message_id,
+            )
+
+            async def _progress_updater() -> None:
+                last_pct = -1.0
+                while True:
+                    await asyncio.sleep(1.5)
+                    with progress_state["lock"]:
+                        pct = progress_state["percent"]
+                        d = progress_state["downloaded"]
+                        t = progress_state["total"]
+                        spd = progress_state["speed"]
+                        done = progress_state["done"]
+                    if pct >= 99.9 or abs(pct - last_pct) >= 5.0 or last_pct < 0:
+                        last_pct = pct
+                        try:
+                            await bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=progress_msg.message_id,
+                                text=_make_progress_caption(pct, d, t, spd),
+                                parse_mode="HTML",
+                            )
+                        except Exception:
+                            pass
+                    if done:
+                        break
+
+            loop = asyncio.get_event_loop()
+            updater_task = asyncio.create_task(_progress_updater())
+        else:
+            loop = asyncio.get_event_loop()
+            updater_task = None
+
+        if not direct:
+            result = await loop.run_in_executor(
+                None,
+                lambda: downloader.download_audio(
                     url=url,
                     audio_format_id=audio_id,
                     service=service,
-                )
-            else:
-                result = downloader.download_direct_media(
+                    on_progress=_progress_callback,
+                ),
+            )
+        else:
+            result = await loop.run_in_executor(
+                None,
+                lambda: downloader.download_direct_media(
                     url=url,
                     file_extension="mp3",
-                )
+                ),
+            )
+
+        if updater_task:
+            with progress_state["lock"]:
+                progress_state["done"] = True
+            try:
+                await asyncio.wait_for(updater_task, timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                updater_task.cancel()
 
         cache_url = original_url if original_url else url
         info = media_cache_storage.get_media(url=cache_url)
@@ -75,11 +147,12 @@ async def async_download_audio(
                 logger.error(
                     f"[async_download_audio] massbots error: {result.context}"
                 )
-                if waiting_msg:
-                    try:
-                        await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
-                    except Exception:
-                        pass
+                for m in (waiting_msg, progress_msg):
+                    if m:
+                        try:
+                            await bot.delete_message(chat_id=chat_id, message_id=m.message_id)
+                        except Exception:
+                            pass
                 await send_error(
                     chat_id=chat_id,
                     text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
@@ -114,21 +187,22 @@ async def async_download_audio(
                     )
                     media_rate_limiter.increment(chat_id, service=service)
                     await send_vpn_ad(chat_id)
-                    # Удаляем ожидание ПОСЛЕ успешной отправки
-                    if waiting_msg:
-                        try:
-                            await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
-                        except Exception:
-                            pass
+                    for m in (waiting_msg, progress_msg):
+                        if m:
+                            try:
+                                await bot.delete_message(chat_id=chat_id, message_id=m.message_id)
+                            except Exception:
+                                pass
                 else:
                     logger.error(
                         f"[async_download_audio] send failed: {body}"
                     )
-                    if waiting_msg:
-                        try:
-                            await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
-                        except Exception:
-                            pass
+                    for m in (waiting_msg, progress_msg):
+                        if m:
+                            try:
+                                await bot.delete_message(chat_id=chat_id, message_id=m.message_id)
+                            except Exception:
+                                pass
                     await send_error(
                         chat_id=chat_id,
                         text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
@@ -138,11 +212,12 @@ async def async_download_audio(
                     "[async_download_audio] send audio via api.telegram.org "
                     f"failed: {e}"
                 )
-                if waiting_msg:
-                    try:
-                        await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
-                    except Exception:
-                        pass
+                for m in (waiting_msg, progress_msg):
+                    if m:
+                        try:
+                            await bot.delete_message(chat_id=chat_id, message_id=m.message_id)
+                        except Exception:
+                            pass
                 await send_error(
                     chat_id=chat_id,
                     text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
@@ -150,12 +225,15 @@ async def async_download_audio(
             return
 
         # ── Обычный путь (yt-dlp) для остальных сервисов ──
+        msg_ids = [waiting_msg.message_id]
+        if progress_msg:
+            msg_ids.append(progress_msg.message_id)
         await handle_download_result(
             result=result,
             media_info=info,
             chat_id=chat_id,
             service=service,
-            message_id=waiting_msg.message_id if waiting_msg else None,
+            message_ids=msg_ids,
         )
 
         logger.info(
@@ -167,6 +245,12 @@ async def async_download_audio(
         logger.exception(
             f"[async_download_audio] Ошибка при скачивании аудио: {e}"
         )
+        for m in (waiting_msg, progress_msg):
+            if m:
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=m.message_id)
+                except Exception:
+                    pass
         await send_error(
             chat_id=chat_id,
             text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
@@ -238,7 +322,7 @@ def _send_massbots_audio(
 async def handle_download_result(
     chat_id: int,
     service: str,
-    message_id: int | None,
+    message_ids: list[int],
     media_info: dict,
     result: AbstractResultModel,
 ):
@@ -247,20 +331,22 @@ async def handle_download_result(
         f"status={result.status}"
     )
 
+    async def _delete_waiting():
+        for mid in (message_ids or []):
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=mid)
+            except Exception:
+                pass
+
     if result.status != "success":
         logger.error(
             f"[handle_download_result] Ошибка загрузки: status={result.status}, "
             f"chat_id={chat_id}"
         )
-        if message_id:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except Exception:
-                pass
-        await send_error(
-            chat_id=chat_id,
-            text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,
-        )
+        await _delete_waiting()
+        ctx = getattr(result, "context", None)
+        text = (ctx if ctx and len(str(ctx)) < 300 else MessageTemplates.DOWNLOAD_AUDIO_ERROR)
+        await send_error(chat_id=chat_id, text=text)
         return
 
     logger.info(
@@ -290,7 +376,7 @@ async def handle_download_result(
             await bot.send_audio(
                 chat_id=chat_id,
                 caption=caption,
-                audio=FSInputFile(path=result.data.path),
+                audio=_video_input(result.data.path),
             )
             media_rate_limiter.increment(chat_id, service=service)
             logger.info(
@@ -299,22 +385,12 @@ async def handle_download_result(
             )
 
         await send_vpn_ad(chat_id)
-
-        # Удаляем ожидание ПОСЛЕ успешной отправки аудио
-        if message_id:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except Exception:
-                pass
+        await _delete_waiting()
     except Exception as e:
         logger.exception(
             f"[handle_download_result] Ошибка при отправке аудио: {e}"
         )
-        if message_id:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except Exception:
-                pass
+        await _delete_waiting()
         await send_error(
             chat_id=chat_id,
             text=MessageTemplates.DOWNLOAD_AUDIO_ERROR,

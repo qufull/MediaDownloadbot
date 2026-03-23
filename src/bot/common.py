@@ -44,6 +44,33 @@ class ServiceType(Enum):
     PINTEREST = "pinterest"
     """Pinterest - визуальная социальная сеть."""
 
+    VIMEO = "vimeo"
+    """Vimeo - видеохостинг."""
+
+    DAILYMOTION = "dailymotion"
+    """Dailymotion - видеохостинг."""
+
+    FACEBOOK = "facebook"
+    """Facebook - социальная сеть."""
+
+    OKRU = "okru"
+    """OK.ru / Одноклассники."""
+
+    TWITCH = "twitch"
+    """Twitch - стриминг и клипы."""
+
+    KICK = "kick"
+    """Kick - стриминг-платформа."""
+
+    RUMBLE = "rumble"
+    """Rumble - видеохостинг."""
+
+    COUB = "coub"
+    """Coub - короткие видео-петли."""
+
+    SOUNDCLOUD = "soundcloud"
+    """SoundCloud - музыкальная платформа."""
+
     UNSUPPORTED = "unsupported"
     """Неподдерживаемый сервис."""
 

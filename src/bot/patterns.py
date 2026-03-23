@@ -88,6 +88,54 @@ class DomainMatcher:
             "pin.it",
             "www.pin.it",
         ],
+        ServiceType.VIMEO: [
+            "vimeo.com",
+            "www.vimeo.com",
+            "player.vimeo.com",
+        ],
+        ServiceType.DAILYMOTION: [
+            "dailymotion.com",
+            "www.dailymotion.com",
+            "dai.ly",
+        ],
+        ServiceType.FACEBOOK: [
+            "facebook.com",
+            "www.facebook.com",
+            "m.facebook.com",
+            "fb.com",
+            "fb.watch",
+            "www.fb.watch",
+        ],
+        ServiceType.OKRU: [
+            "ok.ru",
+            "www.ok.ru",
+            "odnoklassniki.ru",
+            "www.odnoklassniki.ru",
+        ],
+        ServiceType.TWITCH: [
+            "twitch.tv",
+            "www.twitch.tv",
+            "clips.twitch.tv",
+            "m.twitch.tv",
+        ],
+        ServiceType.KICK: [
+            "kick.com",
+            "www.kick.com",
+        ],
+        ServiceType.RUMBLE: [
+            "rumble.com",
+            "www.rumble.com",
+        ],
+        ServiceType.COUB: [
+            "coub.com",
+            "www.coub.com",
+        ],
+        ServiceType.SOUNDCLOUD: [
+            "soundcloud.com",
+            "www.soundcloud.com",
+            "on.soundcloud.com",
+            "m.soundcloud.com",
+        ],
     }
 
     # Приоритетные домены для точного сопоставления
@@ -102,6 +150,9 @@ class DomainMatcher:
         "vk.com": ServiceType.VK,
         "vkvideo.ru": ServiceType.VK,
         "pin.it": ServiceType.PINTEREST,
+        "dai.ly": ServiceType.DAILYMOTION,
+        "fb.watch": ServiceType.FACEBOOK,
+        "on.soundcloud.com": ServiceType.SOUNDCLOUD,
     }
 
     # Эвристические правила для частичного сопоставления
@@ -119,6 +170,19 @@ class DomainMatcher:
         "vkvideo": ServiceType.VK,
         'pinterest': ServiceType.PINTEREST,
         'pin.it': ServiceType.PINTEREST,
+        'vimeo': ServiceType.VIMEO,
+        'dailymotion': ServiceType.DAILYMOTION,
+        'dai.ly': ServiceType.DAILYMOTION,
+        'facebook': ServiceType.FACEBOOK,
+        'fb.com': ServiceType.FACEBOOK,
+        'fb.watch': ServiceType.FACEBOOK,
+        'ok.ru': ServiceType.OKRU,
+        'odnoklassniki': ServiceType.OKRU,
+        'twitch': ServiceType.TWITCH,
+        'kick.com': ServiceType.KICK,
+        'rumble': ServiceType.RUMBLE,
+        'coub': ServiceType.COUB,
+        'soundcloud': ServiceType.SOUNDCLOUD,
     }
 
     @classmethod

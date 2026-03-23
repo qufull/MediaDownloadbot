@@ -93,6 +93,9 @@ from .extractors.twitter import (
 from .extractors.vk import (
     VKExtractor
 )
+from .extractors.generic import (
+    GenericExtractor
+)
 
 
 __all__ = [
@@ -189,6 +192,9 @@ __all__ = [
 
     # VK компоненты
     "VKExtractor",
+
+    # Generic (Vimeo, Dailymotion, Facebook, OK.ru, Twitch, Kick, Rumble, Coub, SoundCloud)
+    "GenericExtractor",
 ]
 
 

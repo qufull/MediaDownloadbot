@@ -63,11 +63,10 @@ class RedditExtractor(AbstractExtractor):
         self.proxy = proxy
         self.cookies_path = Path(cookie_path) if cookie_path else None
 
-        # Проверка существования файла cookie
+        # Проверка существования файла cookie (необязателен — только для 18+ контента)
         if self.cookies_path and not self.cookies_path.exists():
-            error_msg = f"Файл cookie не найден: {self.cookies_path}"
-            logger.error(error_msg)
-            raise CookieFileNotFoundError(error_msg, RedditErrorCode.COOKIE_FILE_NOT_FOUND)
+            logger.warning("Файл cookie не найден: %s — Reddit работает без кук (18+ контент недоступен)", self.cookies_path)
+            self.cookies_path = None
 
         try:
             # Инициализация клиента Reddit
@@ -77,15 +76,17 @@ class RedditExtractor(AbstractExtractor):
                 user_agent=user_agent,
             )
             
-            # Настройка параметров yt-dlp
+            # Настройка параметров yt-dlp (User-Agent снижает риск 403)
             self.ydl_opts: Dict[str, Optional[Union[bool, str, Path]]] = {
                 "quiet": True,
                 "proxy": self.proxy,
                 "no_warnings": False,
                 "cookiefile": self.cookies_path,
-                
                 "playlistend": 1,
                 "noplaylist": True,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                },
             }
             
             self._data: Optional[RedditData] = None
@@ -332,7 +333,11 @@ class RedditExtractor(AbstractExtractor):
                 logger.debug("Извлечение информации о видео завершено")
                 
         except ExtractorError as e:
-            error_msg = f"Ошибка экстрактора видео: {str(e)}"
+            err_str = str(e)
+            if "403" in err_str or "blocked" in err_str.lower():
+                error_msg = "Reddit заблокировал запрос. Попробуйте позже или используйте VPN."
+            else:
+                error_msg = f"Ошибка экстрактора видео: {err_str}"
             logger.error(error_msg)
             self._last_result = RedditResult(
                 status="error",
@@ -343,7 +348,11 @@ class RedditExtractor(AbstractExtractor):
             return
         
         except DownloadError as e:
-            error_msg = f"Ошибка загрузки видео: {str(e)}"
+            err_str = str(e)
+            if "403" in err_str or "blocked" in err_str.lower():
+                error_msg = "Reddit заблокировал запрос. Попробуйте позже или используйте VPN."
+            else:
+                error_msg = f"Ошибка загрузки видео: {err_str}"
             logger.error(error_msg)
             self._last_result = RedditResult(
                 status="error",
@@ -496,7 +505,11 @@ class RedditExtractor(AbstractExtractor):
             return self._last_result
         
         except Exception as e:
-            error_msg = f"Ошибка извлечения: {str(e)}"
+            err_str = str(e)
+            if "403" in err_str or "blocked" in err_str.lower() or "forbidden" in err_str.lower():
+                error_msg = "Reddit заблокировал запрос. Попробуйте позже или используйте VPN."
+            else:
+                error_msg = f"Ошибка извлечения: {err_str}"
             logger.error(error_msg)
             return RedditResult(
                 status="error",

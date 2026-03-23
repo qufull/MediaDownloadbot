@@ -179,7 +179,9 @@ async def handle_error_response(
 
         extractor = get_extractor(service=service)
         code = response.get("code")
-        code_text = extractor.get_error_description(code)
+        context = response.get("context")
+        code_text = (context if context and len(str(context)) < 200 else
+                     extractor.get_error_description(code))
 
         await send_error(
             chat_id=chat_id,

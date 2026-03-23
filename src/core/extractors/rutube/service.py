@@ -209,7 +209,11 @@ class RutubeExtractor(AbstractExtractor):
                 logger.debug("Извлечение информации успешно завершено")
 
             except ExtractorError as e:
-                error_msg = f"Ошибка извлечения: {str(e)}"
+                err_str = str(e)
+                if "404" in err_str or "not found" in err_str.lower():
+                    error_msg = "Видео удалено или недоступно"
+                else:
+                    error_msg = f"Ошибка извлечения: {err_str}"
                 logger.error(error_msg)
                 self._last_result = RutubeResult(
                     status="error",
@@ -220,7 +224,11 @@ class RutubeExtractor(AbstractExtractor):
                 return self._last_result
             
             except DownloadError as e:
-                error_msg = f"Ошибка загрузки при извлечении: {str(e)}"
+                err_str = str(e)
+                if "404" in err_str or "not found" in err_str.lower():
+                    error_msg = "Видео удалено или недоступно"
+                else:
+                    error_msg = f"Ошибка загрузки при извлечении: {err_str}"
                 logger.error(error_msg)
                 self._last_result = RutubeResult(
                     status="error",

@@ -49,15 +49,19 @@ services:
         - media_storage:/app/src/storage/downloads
         - user_data:/app/data
         - ./cookies:/app/cookies
+        - ./secrets/google:/app/secrets/google:ro
       environment:
         BOT_SERVER_URL: "http://telegram-bot-api:${TELEGRAM_HTTP_PORT:-8081}"
+        DRIVE_CREDENTIALS_FILE: /app/secrets/google/credentials.json
+        DRIVE_TOKEN_FILE: /app/secrets/google/token.json
+        DRIVE_FOLDER_ID: ${DRIVE_FOLDER_ID:-}
       deploy:
         resources:
           limits:
-            memory: 1536M
+            memory: 5120M
       command: [ "sh", "-c",
         "uv run uvicorn src.webhook_server:app --host 0.0.0.0 --port 8000 & \
-         uv run python -m celery -A src.celery_app.app:celery_app worker -Q download_audio_queue,extract_queue,download_youtube_queue,download_rutube_queue,download_reddit_queue,download_tiktok_queue,download_twitter_queue,download_instagram_queue,download_vk_queue,download_pinterest_queue,cleanup_queue -n worker@%h -c 2 -P prefork --max-tasks-per-child=10 --max-memory-per-child=400000 --loglevel=warning & \
+         uv run python -m celery -A src.celery_app.app:celery_app worker -Q download_audio_queue,extract_queue,download_youtube_queue,download_rutube_queue,download_reddit_queue,download_tiktok_queue,download_twitter_queue,download_instagram_queue,download_vk_queue,download_pinterest_queue,download_generic_queue,cleanup_queue -n worker@%h -c 6 -P prefork --max-tasks-per-child=10 --max-memory-per-child=400000 --loglevel=info & \
          uv run python -m celery -A src.celery_app.app:celery_app beat --loglevel=warning --pidfile=celerybeat.pid & \
          uv run python main.py"
       ]

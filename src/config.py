@@ -32,7 +32,8 @@ from src.core import (
     InstagramExtractor,
     TwitterExtractor,
     VKExtractor,
-    PinterestExtractor
+    PinterestExtractor,
+    GenericExtractor,
 )
 
 
@@ -44,8 +45,9 @@ settings = AppSettings()
 youtube_extractor = YoutubeExtractor(
     massbots_token=settings.massbots.token,
     massbots_bot_id=settings.massbots.bot_id,
+    proxy=settings.proxy.youtube_proxy,
 )
-logger.warning(">>> MASSBOTS BUILD: YouTube через massbots API, yt-dlp для YouTube ОТКЛЮЧЕН <<<")
+
 
 
 # ======= Downloader =======
@@ -56,6 +58,8 @@ downloader = Downloader(
     massbots_token=settings.massbots.token,
     massbots_bot_id=settings.massbots.bot_id,
     bot_token=settings.telegram.token,
+    youtube_player_client=settings.youtube.player_client,
+    youtube_player_js_variant=settings.youtube.player_js_variant,
 )
 
 reddit_extractor = RedditExtractor(
@@ -85,6 +89,44 @@ vk_extractor = VKExtractor(
     cookie_path=settings.local_storage.browser_cookie_path,
 )
 pinterest_extractor = PinterestExtractor(
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+
+# ======= Generic Extractors (yt-dlp, новые платформы) =======
+vimeo_extractor = GenericExtractor(
+    service_name="vimeo",
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+dailymotion_extractor = GenericExtractor(
+    service_name="dailymotion",
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+facebook_extractor = GenericExtractor(
+    service_name="facebook",
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+okru_extractor = GenericExtractor(
+    service_name="okru",
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+twitch_extractor = GenericExtractor(
+    service_name="twitch",
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+kick_extractor = GenericExtractor(
+    service_name="kick",
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+rumble_extractor = GenericExtractor(
+    service_name="rumble",
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+coub_extractor = GenericExtractor(
+    service_name="coub",
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+soundcloud_extractor = GenericExtractor(
+    service_name="soundcloud",
     cookie_path=settings.local_storage.browser_cookie_path,
 )
 

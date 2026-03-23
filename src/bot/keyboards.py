@@ -61,13 +61,41 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def get_tribute_payment_keyboard() -> InlineKeyboardMarkup:
+def get_timecode_cancel_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="❌ Отмена", callback_data="tc_cancel"))
+    return builder.as_markup()
+
+
+def get_timecode_choice_keyboard(video_key: str) -> InlineKeyboardMarkup:
+    """
+    Показывается после выбора качества.
+    video_key — идентификатор из сессии (format_id видео), например '1080p'.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="🎬 Полностью", callback_data=f"full_dl:{video_key}"))
+    builder.add(InlineKeyboardButton(text="✂️ Фрагмент", callback_data=f"frag_dl:{video_key}"))
+    builder.add(InlineKeyboardButton(text="❌ Отмена", callback_data="tc_cancel"))
+    builder.adjust(2, 1)
+    return builder.as_markup()
+
+
+def get_delivery_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора куда отправить готовое видео (< 1 ГБ)."""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="📱 В Telegram", callback_data="deliver_tg"))
+    builder.add(InlineKeyboardButton(text="🔗 По ссылке", callback_data="deliver_drive"))
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def get_tribute_payment_keyboard(url) -> InlineKeyboardMarkup:
 
     builder = InlineKeyboardBuilder()
     builder.add(
         InlineKeyboardButton(
             text="⭐️ Купить Premium",
-            url="https://t.me/tribute/app?startapp=sQwR"
+            url=str(url)
         )
     )
     return builder.as_markup()

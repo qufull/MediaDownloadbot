@@ -134,6 +134,12 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Cookies (могут содержать сессии)
+cookies/
+
+# Google OAuth (credentials.json, token.json)
+secrets/
+
 # Environments
 .env
 .envrc

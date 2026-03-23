@@ -3,6 +3,8 @@ from typing import Dict, List
 
 from aiogram import Router, F
 from aiogram.enums import ChatAction, ChatMemberStatus
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.methods import AnswerCallbackQuery
 from aiogram.types import CallbackQuery, InputMediaPhoto
 from aiogram.utils.chat_action import ChatActionSender
@@ -13,11 +15,16 @@ from src.utils.ads import send_vpn_ad
 from src.utils.utils import get_ref_stats_text
 from .texts import MessageTemplates
 from .common import exetract_image_name
-from .keyboards import get_retry_subscription_keyboard, get_tribute_payment_keyboard
+from .keyboards import (
+    get_retry_subscription_keyboard,
+    get_tribute_payment_keyboard,
+    get_timecode_choice_keyboard,
+    get_timecode_cancel_keyboard,
+)
 
 from src.config import bot, settings, user_registry
 from src.core import ImageDictAnnotation
-from src.config import user_session_storage, user_activity_queue, media_rate_limiter
+from src.config import user_session_storage, user_activity_queue, media_rate_limiter, settings
 
 from src.utils.telegram_anim import send_error
 
@@ -30,8 +37,88 @@ from src.celery_app.tasks.video_download_worker import (
     download_twitter_video,
     download_instagram_video,
     download_vk_video,
-    download_pinterest_video
+    download_pinterest_video,
+    download_vimeo_video,
+    download_dailymotion_video,
+    download_facebook_video,
+    download_okru_video,
+    download_twitch_video,
+    download_kick_video,
+    download_rumble_video,
+    download_coub_video,
+    download_soundcloud_video,
+    delivery_store,
+    deliver_to_telegram,
+    _deliver_via_drive,
+    _fmt_bytes,
 )
+
+
+# ---------------------------------------------------------------------------
+# FSM: ожидание таймкодов после нажатия "✂️ Фрагмент"
+# ---------------------------------------------------------------------------
+class TimecodeStates(StatesGroup):
+    waiting_for_timecodes = State()
+
+
+# ---------------------------------------------------------------------------
+# Хелпер: карта сервис → Celery-задача
+# ---------------------------------------------------------------------------
+_TASK_MAP = {
+    "twitter": download_twitter_video,
+    "youtube": download_youtube_video,
+    "reddit": download_reddit_video,
+    "rutube": download_rutube_video,
+    "tiktok": download_tiktok_video,
+    "instagram": download_instagram_video,
+    "vk": download_vk_video,
+    "pinterest": download_pinterest_video,
+    "vimeo": download_vimeo_video,
+    "dailymotion": download_dailymotion_video,
+    "facebook": download_facebook_video,
+    "okru": download_okru_video,
+    "twitch": download_twitch_video,
+    "kick": download_kick_video,
+    "rumble": download_rumble_video,
+    "coub": download_coub_video,
+    "soundcloud": download_soundcloud_video,
+}
+
+
+def _get_task_func_for_service(service: str):
+    return _TASK_MAP.get(service)
+
+
+async def _dispatch_download(
+    chat_id: int,
+    message_id: int,
+    url: str,
+    width,
+    height,
+    chosen_id: str,
+    merge_audio: bool,
+    is_premium: bool,
+    is_admin: bool,
+    service: str,
+) -> None:
+    """Запускает Celery-задачу: сразу (premium/admin) или с задержкой (free)."""
+    task = _get_task_func_for_service(service)
+    if task is None:
+        await send_error(chat_id=chat_id, text=f"Сервис {service} пока не поддерживается для скачивания.")
+        return
+
+    if is_premium or is_admin:
+        task.delay(
+            url=url, width=width, height=height, chat_id=chat_id,
+            message_id=message_id, video_id=chosen_id, merge_audio=merge_audio,
+        )
+    else:
+        delay = random.randint(60, 180)
+        asyncio.create_task(
+            process_queue_and_download(
+                chat_id, message_id, url, width, height, chosen_id, merge_audio, delay, task,
+            )
+        )
 
 router = Router(name=__name__)
 
@@ -54,7 +141,7 @@ async def process_queue_and_download(chat_id, message_id, url, width, height, ch
             ),
             parse_mode="HTML",
             reply_to_message_id=message_id,
-            reply_markup=get_tribute_payment_keyboard()  # Сразу даем кнопку купить!
+            reply_markup=get_tribute_payment_keyboard(settings.tribute.url)  # Сразу даем кнопку купить!
         )
     except Exception:
         timer_msg = None
@@ -76,7 +163,7 @@ async def process_queue_and_download(chat_id, message_id, url, width, height, ch
     )
 
 @router.callback_query(F.data.startswith("video"))
-async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
+async def handle_video(callback: CallbackQuery, state: FSMContext) -> AnswerCallbackQuery:
     chat_id = callback.message.chat.id
     await callback.answer()
 
@@ -102,7 +189,7 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
                 await bot.send_message(
                     chat_id=chat_id,
                     text=promo_text,
-                    reply_markup=get_tribute_payment_keyboard(),
+                    reply_markup=get_tribute_payment_keyboard(settings.tribute.url),
                     parse_mode="HTML"
                 )
             # Если это Premium (значит он исчерпал лимит 30 видео на YouTube)
@@ -149,7 +236,7 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
         if service in premium_services and quality >= 720:
             if not user_registry.is_user_premium(callback.from_user.id) and callback.from_user.id not in settings.telegram.admin_ids:
                 promo_text = (
-                    f"⭐️ Высокое качество (720p и выше) доступно только по Premium-подписке всего за 100р / мес!\n\n"
+                    f"⭐️ Высокое качество (720p и выше) доступно только по Premium-подписке!\n\n"
                     "🔥 PREMIUM\n\n"
                     "✅ 720p / 1080p\n"
                     "✅ Без рекламы\n"
@@ -165,7 +252,7 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
 
                 await callback.message.answer(
                     promo_text,
-                    reply_markup=get_tribute_payment_keyboard(),
+                    reply_markup=get_tribute_payment_keyboard(settings.tribute.url),
                     parse_mode="HTML"
                 )
                 try:
@@ -176,53 +263,133 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
 
         message_id = callback.message.message_id
 
-        user_activity_queue.create_download(url=url, chat_id=chat_id, service=service)
-
-        task_map = {
-            "twitter": download_twitter_video,
-            "youtube": download_youtube_video,
-            "reddit": download_reddit_video,
-            "rutube": download_rutube_video,
-            "tiktok": download_tiktok_video,
-            "instagram": download_instagram_video,
-            "vk": download_vk_video,
-            "pinterest": download_pinterest_video,
-        }
-        task = task_map.get(service)
-        if not task:
-            await send_error(chat_id=chat_id, text=f"Сервис {service} пока не поддерживается для скачивания.")
-            return
-
         chosen_id = _safe_media_id(video)
         if not chosen_id:
             await send_error(chat_id=chat_id, text="У видео нет идентификатора формата (name/id).")
             return
 
-        merge_audio = True if not video.get("has_audio", False) else False
+        if _get_task_func_for_service(service) is None:
+            await send_error(chat_id=chat_id, text=f"Сервис {service} пока не поддерживается для скачивания.")
+            return
 
+        merge_audio = True if not video.get("has_audio", False) else False
         is_premium = user_registry.is_user_premium(callback.from_user.id)
         is_admin = callback.from_user.id in settings.telegram.admin_ids
 
-        if is_premium or is_admin:
-            # Премиум: отдаем команду в Celery моментально
-            task.delay(
-                url=url, width=width, height=height, chat_id=chat_id,
-                message_id=message_id, video_id=chosen_id, merge_audio=merge_audio
-            )
-        else:
-            # Бесплатный юзер: генерируем очередь от 60 до 180 секунд (1-3 минуты)
-            delay = random.randint(60, 180)
-            # Отправляем в нашу фоновую функцию
-            asyncio.create_task(
-                process_queue_and_download(
-                    chat_id, message_id, url, width, height, chosen_id, merge_audio, delay, task
-                )
-            )
+        user_activity_queue.create_download(url=url, chat_id=chat_id, service=service)
+
+        # Сохраняем контекст в FSM и предлагаем выбор: целиком или фрагмент
+        await state.update_data(
+            url=url,
+            width=width,
+            height=height,
+            service=service,
+            video_key=chosen_id,
+            merge_audio=merge_audio,
+            message_id=message_id,
+            is_premium=is_premium,
+            is_admin=is_admin,
+        )
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "🎬 <b>Скачать целиком или выбрать фрагмент?</b>\n\n"
+                "• <b>Полностью</b> — скачать всё видео\n"
+                "• <b>Фрагмент</b> — выбрать отрезок по таймкодам"
+            ),
+            reply_markup=get_timecode_choice_keyboard(chosen_id),
+            parse_mode="HTML",
+        )
 
     except Exception as e:
         await send_error(chat_id=chat_id, text="Ошибка при обработке видео. Попробуй ещё раз.")
         user_activity_queue.delete_download(chat_id=chat_id)
         raise
+
+
+@router.callback_query(F.data.startswith("full_dl"))
+async def handle_full_download(callback: CallbackQuery, state: FSMContext) -> None:
+    """Пользователь выбрал «🎬 Полностью» — запускаем скачивание без таймкодов."""
+    chat_id = callback.message.chat.id
+    await callback.answer()
+
+    data = await state.get_data()
+    await state.clear()
+
+    if not data:
+        await send_error(chat_id=chat_id, text="Сессия истекла. Отправь ссылку заново.")
+        return
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    await _dispatch_download(
+        chat_id=chat_id,
+        message_id=data.get("message_id", callback.message.message_id),
+        url=data["url"],
+        width=data.get("width"),
+        height=data.get("height"),
+        chosen_id=data["video_key"],
+        merge_audio=data.get("merge_audio", False),
+        is_premium=data.get("is_premium", False),
+        is_admin=data.get("is_admin", False),
+        service=data["service"],
+    )
+
+
+@router.callback_query(F.data.startswith("frag_dl"))
+async def handle_fragment_choice(callback: CallbackQuery, state: FSMContext) -> None:
+    """Пользователь выбрал «✂️ Фрагмент» — просим ввести таймкоды."""
+    chat_id = callback.message.chat.id
+    await callback.answer()
+
+    data = await state.get_data()
+    if not data:
+        await send_error(chat_id=chat_id, text="Сессия истекла. Отправь ссылку заново.")
+        return
+
+    await state.set_state(TimecodeStates.waiting_for_timecodes)
+
+    tc_text = (
+        "⏱ <b>Введите таймкоды фрагмента</b>\n\n"
+        "Формат: <code>начало-конец</code>\n\n"
+        "Примеры:\n"
+        "• <code>1:30-5:00</code>\n"
+        "• <code>00:01:30-00:05:00</code>\n"
+        "• <code>30-90</code> (в секундах)"
+    )
+    try:
+        await callback.message.edit_text(
+            tc_text,
+            parse_mode="HTML",
+            reply_markup=get_timecode_cancel_keyboard(),
+        )
+    except Exception:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=tc_text,
+            parse_mode="HTML",
+            reply_markup=get_timecode_cancel_keyboard(),
+        )
+
+
+@router.callback_query(F.data == "tc_cancel")
+async def handle_timecode_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    """Пользователь нажал «❌ Отмена» во время ввода таймкодов."""
+    chat_id = callback.message.chat.id
+    await callback.answer("Отменено")
+    await state.clear()
+    try:
+        user_activity_queue.delete_download(chat_id=chat_id)
+    except Exception:
+        pass
+    try:
+        await callback.message.edit_text("❌ Скачивание отменено.")
+    except Exception:
+        await bot.send_message(chat_id=chat_id, text="❌ Скачивание отменено.")
 
 
 @router.callback_query(F.data.startswith("image"))
@@ -380,6 +547,64 @@ async def handle_thumbnail(callback: CallbackQuery) -> AnswerCallbackQuery:
         raise
 
 
+# ─── Delivery choice callbacks ───────────────────────────────────────
+
+@router.callback_query(F.data == "deliver_tg")
+async def handle_deliver_tg(callback: CallbackQuery) -> None:
+    """Пользователь выбрал отправить видео в Telegram."""
+    await callback.answer()
+    chat_id = callback.message.chat.id
+
+    data = delivery_store.get(chat_id)
+    if not data:
+        await callback.message.edit_text("⏰ Время ожидания истекло. Запросите видео заново.")
+        return
+
+    delivery_store.delete(chat_id)
+    try:
+        await callback.message.edit_text("📱 Отправляю в Telegram...")
+    except Exception:
+        pass
+
+    await deliver_to_telegram(
+        chat_id=chat_id,
+        video_path=data["video_path"],
+        file_size=data["file_size"],
+        url=data["url"],
+        service=data["service"],
+        width=data.get("width") or 0,
+        height=data.get("height") or 0,
+        original_url=data.get("original_url", ""),
+        author_name=data.get("author_name", "Unknown"),
+        ask_message_id=callback.message.message_id,
+    )
+
+
+@router.callback_query(F.data == "deliver_drive")
+async def handle_deliver_drive(callback: CallbackQuery) -> None:
+    """Пользователь выбрал получить ссылку на Drive."""
+    await callback.answer()
+    chat_id = callback.message.chat.id
+
+    data = delivery_store.get(chat_id)
+    if not data:
+        await callback.message.edit_text("⏰ Время ожидания истекло. Запросите видео заново.")
+        return
+
+    delivery_store.delete(chat_id)
+    try:
+        await callback.message.edit_text("🔗 Загружаю на Google Drive...")
+    except Exception:
+        pass
+
+    await _deliver_via_drive(
+        chat_id=chat_id,
+        video_path=data["video_path"],
+        file_size=data["file_size"],
+        service=data["service"],
+    )
+
+
 @router.callback_query(F.data == "check_subscription")
 async def check_subscription_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -427,5 +652,8 @@ async def check_subscription_callback(callback: CallbackQuery):
         channels_list = "\n".join([f"• {ch['title']}" for ch in missing_subscriptions])
         text = MessageTemplates.SUBSCRIPTION_ERROR_MANY.format(channel_list=channels_list)
 
-    await callback.message.edit_text(text=text, reply_markup=reply_markup)
+    try:
+        await callback.message.edit_text(text=text, reply_markup=reply_markup)
+    except Exception:
+        pass
     await callback.answer(text=MessageTemplates.NOT_SUBSCRIPTION)

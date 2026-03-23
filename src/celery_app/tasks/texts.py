@@ -71,3 +71,10 @@ class MessageTemplates:
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
         "🤖 <b>Получено через:</b> <i>{botname}</i>"
     )
+
+    DOWNLOAD_VIDEO_DRIVE_LINK = (
+        "📁 <b>Видео готово</b> ({size})\n\n"
+        "⬇️ <b>Скачать с Google Drive:</b>\n"
+        "<a href=\"{link}\">Открыть файл</a>\n\n"
+        "⚡️ Скачайте сейчас — файл будет удалён после отправки"
+    )

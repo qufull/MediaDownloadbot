@@ -24,6 +24,15 @@ from src.config import (
     twitter_extractor,
     vk_extractor,
     pinterest_extractor,
+    vimeo_extractor,
+    dailymotion_extractor,
+    facebook_extractor,
+    okru_extractor,
+    twitch_extractor,
+    kick_extractor,
+    rumble_extractor,
+    coub_extractor,
+    soundcloud_extractor,
 )
 
 
@@ -93,8 +102,19 @@ class MediaProcessor:
             w = int(video.get("width") or 0)
             h = int(video.get("height") or 0)
 
+            # Coub/Kick: форматы могут быть без height (html5-video-higher и т.п.)
             if w == 0 and h == 0:
-                continue
+                fmt_id = (video.get("format_id") or video.get("name") or "").lower()
+                if service in ("coub", "kick") and fmt_id:
+                    h = 480  # дефолт для Coub/Kick
+                    if "higher" in fmt_id or "high" in fmt_id:
+                        h = 720
+                    elif "med" in fmt_id or "medium" in fmt_id:
+                        h = 480
+                    elif "low" in fmt_id:
+                        h = 360
+                else:
+                    continue
 
             # 1. СЕКРЕТ ШОРТСОВ: берем меньшую сторону (1080x1920 станет 1080)
             raw_q = min(w, h) if w and h else max(w, h)
@@ -264,6 +284,15 @@ def get_extractor(service: str) -> AbstractExtractor:
         "twitter": twitter_extractor,
         "vk": vk_extractor,
         "pinterest": pinterest_extractor,
+        "vimeo": vimeo_extractor,
+        "dailymotion": dailymotion_extractor,
+        "facebook": facebook_extractor,
+        "okru": okru_extractor,
+        "twitch": twitch_extractor,
+        "kick": kick_extractor,
+        "rumble": rumble_extractor,
+        "coub": coub_extractor,
+        "soundcloud": soundcloud_extractor,
     }
 
     if service not in extractors:

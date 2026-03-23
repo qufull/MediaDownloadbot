@@ -107,13 +107,9 @@ class IsAdminMiddleware(BaseMiddleware):
                         'title': chat.title
                     })
             except Exception as e:
-                # Если бот не админ в канале, get_chat_member может выкинуть ошибку
-                logger.error(f"Ошибка проверки подписки в {clean_username}: {e}")
-                missing_subscriptions.append({
-                    'chat_id': None,
-                    'username': f"@{clean_username}",
-                    'title': f"@{clean_username}"
-                })
+                # Бот не является админом канала — пропускаем проверку
+                # (нельзя проверить членство без прав администратора)
+                logger.warning(f"Пропуск проверки подписки в {clean_username}: {e}")
 
         return missing_subscriptions
 

@@ -3,6 +3,7 @@ from typing import List, Dict
 from urllib.parse import urlparse
 
 from aiogram import Router, F
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto,InputMediaVideo,CallbackQuery,InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandObject, CommandStart, Command
 from aiogram.methods import SendMessage
@@ -14,6 +15,7 @@ from src.utils.utils import get_ref_stats_text
 from .filters import URLFilter
 from .common import ServiceType
 from .keyboards import get_admin_keyboard, get_tribute_payment_keyboard, get_broadcast_keyboard
+from .callback_handlers import TimecodeStates, _dispatch_download, _get_task_func_for_service
 from .patterns import DomainMatcher
 from .texts import MessageTemplates
 
@@ -40,6 +42,38 @@ async def _auto_delete(bot_instance, chat_id: int, message_id: int, delay: int =
 
 class BroadcastStates(StatesGroup):
     waiting_for_message = State()
+
+
+def _parse_timecode_range(text: str):
+    """
+    Парсит диапазон таймкодов из строки вида:
+      '1:30-5:00'  → (90, 300)
+      '01:30-05:00' → (90, 300)
+      '00:01:30-00:05:00' → (90, 300)
+    Возвращает (start_sec, end_sec) или None при ошибке.
+    """
+    import re
+
+    def _to_sec(s: str) -> int:
+        parts = [int(x) for x in s.split(":")]
+        if len(parts) == 1:
+            return parts[0]
+        if len(parts) == 2:
+            return parts[0] * 60 + parts[1]
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+    text = text.strip().replace(" ", "")
+    m = re.match(r'^(\d{1,2}(?::\d{2}){0,2})-(\d{1,2}(?::\d{2}){0,2})$', text)
+    if not m:
+        return None
+    try:
+        start = _to_sec(m.group(1))
+        end = _to_sec(m.group(2))
+    except (ValueError, IndexError):
+        return None
+    if start >= end or end <= 0:
+        return None
+    return start, end
 
 @router.message(CommandStart())
 async def handle_start(message: Message, command: CommandObject) -> None:
@@ -83,7 +117,11 @@ async def handle_start(message: Message, command: CommandObject) -> None:
         InputMediaPhoto(media="AgACAgIAAxkBAAKeL2lrf2LxLcJ3jvf6Ltpp8OXxBEogAAJFDWsb3a9hS1isoqXax2Y1AQADAgADeQADNgQ"),
     ]
 
-    await message.answer_media_group(media)
+    try:
+        await message.answer_media_group(media)
+    except Exception:
+        # file_id привязан к публичному api.telegram.org и не работает через локальный сервер
+        await message.answer(text=welcome_text, parse_mode="HTML")
 
 
 @router.message(F.text == "📤 Рассылка")
@@ -282,17 +320,58 @@ async def handle_products(message: Message) -> SendMessage:
 @router.message(Command("help"))
 async def handle_help(message: Message) -> SendMessage:
     """Показать расширенную справку."""
+    _PLATFORM_LABELS = {
+        "youtube":      "🎬 YouTube",
+        "rutube":       "📺 RuTube",
+        "instagram":    "📸 Instagram",
+        "tiktok":       "🎵 TikTok",
+        "twitter":      "🐦 X (Twitter)",
+        "reddit":       "👽 Reddit",
+        "vk":           "🇷🇺 VK",
+        "pinterest":    "📌 Pinterest",
+        "vimeo":        "🎞️ Vimeo",
+        "dailymotion":  "📡 Dailymotion",
+        "facebook":     "👥 Facebook",
+        "okru":         "🟠 OK.ru",
+        "twitch":       "🎮 Twitch",
+        "kick":         "🟩 Kick",
+        "rumble":       "🦁 Rumble",
+        "coub":         "♾️ Coub",
+        "soundcloud":   "🎧 SoundCloud",
+    }
+
     supported_services = []
     for service_type, domains in DomainMatcher.DOMAIN_PATTERNS.items():
-        domain_examples = ", ".join(domains[:3])
-        supported_services.append(
-            f"• <b>{service_type.value.upper()}</b> - {domain_examples}..."
-        )
+        key = service_type.value
+        label = _PLATFORM_LABELS.get(key, f"🌐 {key.upper()}")
+        domain_example = domains[0] if domains else key
+        supported_services.append(f"• {label} — <code>{domain_example}</code>")
 
-    tail_supported_services = chr(10).join(supported_services)
+    tail_supported_services = "\n".join(supported_services)
     help_text = MessageTemplates.HELP.format(tail_supported_services=tail_supported_services)
     await message.answer(text=help_text)
 
+
+@router.message(Command("support"))
+async def support_command(message:Message):
+    builder = InlineKeyboardBuilder()
+
+    # Вставь сюда юзернейм твоего аккаунта поддержки (без @)
+    support_username = "skynetaivpn_support"
+
+    # Создаем кнопку-ссылку
+    builder.button(
+        text="👨‍💻 Написать специалисту",
+        url=f"https://t.me/{support_username}"
+    )
+
+    await message.answer(
+        "📝 **Служба поддержки**\n\n"
+        "Если у вас возникли вопросы, проблемы с оплатой или вы нашли баг, "
+        "пожалуйста, напишите нам. Мы ответим в кратчайшие сроки!",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
 
 @router.message(Command("donate"))
 async def handle_donate(message: Message) -> SendMessage:
@@ -342,7 +421,7 @@ async def handle_url_message(message: Message) -> SendMessage:
                     )
                     await message.answer(
                         text=promo_text,
-                        reply_markup=get_tribute_payment_keyboard(),
+                        reply_markup=get_tribute_payment_keyboard(settings.tribute.url),
                         parse_mode="HTML"
                     )
                 # Если это Premium (исчерпал лимит 30 видео на YouTube)
@@ -430,6 +509,63 @@ async def handle_ref_command(message: Message) -> None:
     )
 
     await message.answer(text, parse_mode="HTML")
+
+@router.message(TimecodeStates.waiting_for_timecodes)
+async def handle_timecodes_input(message: Message, state: FSMContext) -> None:
+    """Пользователь ввёл таймкоды после нажатия '✂️ Фрагмент'."""
+    chat_id = message.chat.id
+    data = await state.get_data()
+    await state.clear()
+
+    parsed = _parse_timecode_range(message.text or "")
+    if not parsed:
+        await message.answer(
+            "❌ Неверный формат таймкодов.\n\n"
+            "Примеры:\n"
+            "• <code>1:30-5:00</code>\n"
+            "• <code>00:01:30-00:05:00</code>\n\n"
+            "Попробуйте ещё раз — нажмите на нужное качество заново.",
+            parse_mode="HTML",
+        )
+        return
+
+    start_sec, end_sec = parsed
+    video_key = data.get("video_key", "")
+    # Кодируем таймкоды в video_id: "1080p|90-300"
+    video_id_with_tc = f"{video_key}|{start_sec}-{end_sec}"
+
+    # Восстанавливаем параметры скачивания из сохранённого контекста
+    url = data.get("url", "")
+    width = data.get("width", 0)
+    height = data.get("height", 0)
+    service = data.get("service", "")
+    merge_audio = data.get("merge_audio", False)
+    message_id = data.get("message_id", message.message_id)
+
+    def _fmt_tc(sec: int) -> str:
+        h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
+        if h:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
+
+    await message.answer(
+        f"✂️ Скачиваю фрагмент <b>{_fmt_tc(start_sec)}–{_fmt_tc(end_sec)}</b>...",
+        parse_mode="HTML",
+    )
+
+    await _dispatch_download(
+        chat_id=chat_id,
+        message_id=message_id,
+        url=url,
+        width=data.get("width"),
+        height=data.get("height"),
+        chosen_id=video_id_with_tc,
+        merge_audio=data.get("merge_audio", False),
+        is_premium=data.get("is_premium", False),
+        is_admin=data.get("is_admin", False),
+        service=service,
+    )
+
 
 @router.message()
 async def handle_unknown_message(message: Message) -> None:

@@ -34,14 +34,14 @@ class MessageTemplates:
         "3. Нажми кнопку «Скопировать ссылку» или нажми \"Поделиться\" и выбери нашего бота.\n"
         "4. Отправь ссылку боту и получи скаченный файл!\n\n"
         "💡 <b>Поддерживаемые платформы:</b>\n\n"
-        "• YouTube\n"
-        "• Reddit\n"
-        "• RuTube\n"
-        "• Instagram\n"
-        "• TikTok\n"
-        "• X (Twitter)\n"
-        "• VK\n"
-        "• Pinterest"
+        "🎬 YouTube · RuTube\n"
+        "📸 Instagram · TikTok · Pinterest\n"
+        "🐦 X (Twitter) · Reddit\n"
+        "🇷🇺 VK · OK.ru\n"
+        "🎞️ Vimeo · Dailymotion\n"
+        "👥 Facebook · Twitch · Kick\n"
+        "🦁 Rumble · ♾️ Coub\n"
+        "🎧 SoundCloud"
     )
 
     ERROR = (

@@ -21,7 +21,6 @@ celery_app.conf.update(
     # лимиты, чтобы не висеть вечно (подстрой под свою реальность)
     task_soft_time_limit=60 * 20,  # 20 минут
     task_time_limit=60 * 25,
-
     task_routes={
         # Очередь для извлечения информации
         "src.celery_app.tasks.media_extractor_worker.extract_info": {"queue": "extract_queue"},
@@ -36,6 +35,17 @@ celery_app.conf.update(
         "src.celery_app.tasks.video_download_worker.download_instagram_video": {"queue": "download_instagram_queue"},
         "src.celery_app.tasks.video_download_worker.download_vk_video": {"queue": "download_vk_queue"},
         "src.celery_app.tasks.video_download_worker.download_pinterest_video": {"queue": "download_pinterest_queue"},
+
+        # Новые платформы — общая очередь
+        "src.celery_app.tasks.video_download_worker.download_vimeo_video": {"queue": "download_generic_queue"},
+        "src.celery_app.tasks.video_download_worker.download_dailymotion_video": {"queue": "download_generic_queue"},
+        "src.celery_app.tasks.video_download_worker.download_facebook_video": {"queue": "download_generic_queue"},
+        "src.celery_app.tasks.video_download_worker.download_okru_video": {"queue": "download_generic_queue"},
+        "src.celery_app.tasks.video_download_worker.download_twitch_video": {"queue": "download_generic_queue"},
+        "src.celery_app.tasks.video_download_worker.download_kick_video": {"queue": "download_generic_queue"},
+        "src.celery_app.tasks.video_download_worker.download_rumble_video": {"queue": "download_generic_queue"},
+        "src.celery_app.tasks.video_download_worker.download_coub_video": {"queue": "download_generic_queue"},
+        "src.celery_app.tasks.video_download_worker.download_soundcloud_video": {"queue": "download_generic_queue"},
 
         # Очереди для очистки папки
         "src.celery_app.tasks.cleanup_worker.smart_cleanup_downloads": {"queue": "cleanup_queue"},
@@ -72,9 +82,11 @@ celery_app.conf.update(
     },
     task_annotations={
         "src.celery_app.tasks.video_download_worker.download_youtube_video": {
-            "rate_limit": "12/m"
-        }
-    }
+            "rate_limit": "12/m",
+            "soft_time_limit": 60 * 90,
+            "time_limit": 60 * 120,
+        },
+    },
 )
 
 celery_app.autodiscover_tasks(

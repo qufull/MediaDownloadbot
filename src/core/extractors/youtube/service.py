@@ -378,8 +378,31 @@ class YoutubeExtractor(AbstractExtractor):
             )
             return self._last_result
 
+        # Добавляем 1080p/1440p/2160p/4320p только если yt-dlp реально их видит — иначе клиент
+        # нажмёт 2160p и получит 360p (fallback). Проверяем через listformats.
+        existing_heights = {v.height for v in self._data.videos}
+        max_ytdlp_height = self._get_ytdlp_max_height(url)
+        for extra_height in (1080, 1440, 2160, 4320):
+            if extra_height not in existing_heights and max_ytdlp_height is not None and max_ytdlp_height >= extra_height:
+                self._data.videos.append(
+                    YoutubeVideo(
+                        id=str(uuid4()),
+                        url=url,
+                        name=f"{extra_height}p",
+                        has_audio=True,
+                        fps=None,
+                        width=None,
+                        height=extra_height,
+                        language=None,
+                        total_bitrate=0,
+                        language_preference=0,
+                    )
+                )
+                video_count += 1
+                logger.debug("Added %sp (yt-dlp has up to %s)", extra_height, max_ytdlp_height)
+
         logger.info(
-            "Extracted (massbots): videos=%s audios=%s thumbs=%s",
+            "Extracted (massbots+ytdlp): videos=%s audios=%s thumbs=%s",
             video_count, len(self._data.audios), thumb_count,
         )
         self._last_result = YoutubeResult(data=self._data)
@@ -394,6 +417,32 @@ class YoutubeExtractor(AbstractExtractor):
         if match:
             return int(match.group(1))
         return None
+
+    def _get_ytdlp_max_height(self, url: str) -> Optional[int]:
+        """Макс. высота из yt-dlp listformats. Без extractor_args — yt-dlp сам выбирает клиентов."""
+        try:
+            from yt_dlp import YoutubeDL
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "extract_flat": False,
+                "noplaylist": True,
+            }
+            if self.proxy:
+                opts["proxy"] = self.proxy
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            if not info or "formats" not in info:
+                return None
+            max_h = 0
+            for f in info.get("formats") or []:
+                h = f.get("height")
+                if isinstance(h, (int, float)) and h > max_h:
+                    max_h = int(h)
+            return max_h if max_h else None
+        except Exception as e:
+            logger.debug("yt-dlp max height check failed: %s", e)
+            return None
 
     # ─── API Download helpers (используются из Downloader) ──────────
 
