@@ -67,7 +67,7 @@ def get_tribute_payment_keyboard() -> InlineKeyboardMarkup:
     builder.add(
         InlineKeyboardButton(
             text="⭐️ Купить Premium",
-            url="https://t.me/tribute/app?startapp=sQwR"
+            url="https://t.me/tribute/app?startapp=psMq"
         )
     )
     return builder.as_markup()

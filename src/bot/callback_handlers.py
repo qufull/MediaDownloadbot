@@ -149,7 +149,7 @@ async def handle_video(callback: CallbackQuery) -> AnswerCallbackQuery:
         if service in premium_services and quality >= 720:
             if not user_registry.is_user_premium(callback.from_user.id) and callback.from_user.id not in settings.telegram.admin_ids:
                 promo_text = (
-                    f"⭐️ Высокое качество (720p и выше) доступно только по Premium-подписке всего за 100р / мес!\n\n"
+                    f"⭐️ Высокое качество (720p и выше) доступно только по Premium-подписке!\n\n"
                     "🔥 PREMIUM\n\n"
                     "✅ 720p / 1080p\n"
                     "✅ Без рекламы\n"
