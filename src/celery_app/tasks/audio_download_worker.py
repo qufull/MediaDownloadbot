@@ -1,8 +1,10 @@
+import asyncio
 import logging
 import json
 import urllib.request
 import urllib.parse
 import urllib.error
+from src.celery_app.app import shared_loop
 
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -10,7 +12,6 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from src.utils.ads import send_vpn_ad
 from ..app import celery_app
-from ..app import celery_event_loop
 from .texts import MessageTemplates
 
 from src.config import bot
@@ -22,7 +23,7 @@ from src.config import user_activity_queue
 from src.config import media_cache_storage
 from src.config import media_rate_limiter
 
-from src.utils.telegram_anim import send_waiting, send_error
+from src.utils.telegram_anim import send_error
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ async def async_download_audio(
 
     try:
         # Анимация ожидания (load.mp4)
-        waiting_msg = await send_waiting(
+        waiting_msg = await bot.send_message(
             chat_id=chat_id,
             text=MessageTemplates.DOWNLOAD_STARTED,
             reply_to_message_id=message_id,
@@ -337,7 +338,7 @@ def download_audio(
     )
 
     try:
-        celery_event_loop.run_until_complete(
+        future = asyncio.run_coroutine_threadsafe(
             async_download_audio(
                 url=url,
                 chat_id=chat_id,
@@ -346,8 +347,10 @@ def download_audio(
                 message_id=message_id,
                 direct=direct,
                 original_url=original_url,
-            )
+            ),
+            shared_loop
         )
+        future.result()
         logger.info(
             f"[download_audio] Celery-задача завершена: chat_id={chat_id}"
         )

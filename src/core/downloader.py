@@ -116,6 +116,18 @@ def _ensure_h264(file_path: Path) -> Path:
         return file_path
 
 
+QUALITY_MAP: Dict[str, str] = {
+    "4320p": "bestvideo[height<=4320]+bestaudio[ext=m4a]/bestvideo[height<=4320]+bestaudio",
+    "2160p": "bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio",
+    "1440p": "bestvideo[height<=1440]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio",
+    "1080p": "bestvideo[height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio",
+    "720p":  "bestvideo[height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio",
+    "480p":  "bestvideo[height<=480]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio",
+    "360p":  "bestvideo[height<=360]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio",
+    "240p":  "bestvideo[height<=240]+bestaudio[ext=m4a]/bestvideo[height<=240]+bestaudio",
+}
+QUALITY_ORDER = ["4320p", "2160p", "1440p", "1080p", "720p", "480p", "360p", "240p"]
+
 class Downloader:
     """
     Downloader с двойным бэкендом:
@@ -128,10 +140,9 @@ class Downloader:
     def __init__(
         self,
         retries_count: int = 10,
-        proxy: Optional[str] = None,
+        proxies: Optional[Dict[str, str]] = None,
         cookie_path: Optional[str] = None,
         vk_cookie_path: Optional[str] = None,
-        rutube_proxy: Optional[str] = None,
         concurrent_download_count: int = 2,
         output_path: Union[str, Path] = "./downloads/",
         massbots_token: Optional[str] = None,
@@ -139,8 +150,7 @@ class Downloader:
         bot_token: Optional[str] = None,
         youtube_poll_interval: float = 3.0,
     ) -> None:
-        self.proxy = proxy
-        self.rutube_proxy = rutube_proxy
+        self.proxies = proxies or {}
         self.bot_token = bot_token
         self.cookies_path = Path(cookie_path) if cookie_path else None
         self.vk_cookies_path = Path(vk_cookie_path) if vk_cookie_path else None
@@ -164,10 +174,10 @@ class Downloader:
             "retries": retries_count,
             "fragment_retries": retries_count,
             "concurrent_fragment_downloads": concurrent_download_count,
-            "proxy": self.proxy,
             "cookiefile": str(self.cookies_path) if self.cookies_path else None,
             "max_filesize": 2 * 1024 * 1024 * 1024,  # Лимит 2 ГБ (в байтах)
             "nopart": False,
+            "socket_timeout": 30,
         }
 
         # massbots SDK для YouTube
@@ -188,8 +198,6 @@ class Downloader:
         logger.info(
             "Downloader init. cookies=%s proxy=%s rutube_proxy=%s out=%s youtube=%s",
             str(self.cookies_path) if self.cookies_path else "disabled",
-            self.proxy,
-            self.rutube_proxy,
             self.output_path,
             "massbots" if self._massbots_enabled else "yt-dlp",
         )
@@ -201,10 +209,16 @@ class Downloader:
 
     def _yt_opts_for_service(self, service: Optional[str]) -> Dict[str, Any]:
         opts = dict(self.base_opts)
-        if service == "rutube" and self.rutube_proxy:
-            opts["proxy"] = self.rutube_proxy
+
+        # Динамически подставляем прокси для сервиса
+        if service and service in self.proxies and self.proxies[service]:
+            opts["proxy"] = self.proxies[service]
+        else:
+            opts.pop("proxy", None)
+
         if service == "vk" and self.vk_cookies_path:
             opts["cookiefile"] = str(self.vk_cookies_path)
+
         return opts
 
     def _looks_like_yt_bot_block(self, err: Exception) -> bool:
@@ -398,46 +412,95 @@ class Downloader:
             logger.exception("ffmpeg conversion failed: %s", e)
             return None
 
-    # ─── download_video ─────────────────────────────────────────────
+        # ─── download_video ─────────────────────────────────────────────
 
     def download_video(
-        self,
-        url: str,
-        video_format_id: str,
-        merge_audio: bool = False,
-        service: str = None,
+            self,
+            url: str,
+            video_format_id: str,
+            merge_audio: bool = False,
+            service: str = None,
+            on_progress=None,
     ) -> Union[AbstractResultModel, YoutubeDownloadResult]:
         logger.info("download_video: url=%s fmt=%s service=%s", url, video_format_id, service)
 
+        # ─── 1. ПАРСИМ ТАЙМКОДЫ ───
+        base_format_id = video_format_id
+        tc_start_sec = None
+        tc_end_sec = None
+
+        if "|" in video_format_id:
+            parts = video_format_id.split("|", 1)
+            base_format_id = parts[0]
+            if len(parts) > 1 and "-" in parts[1]:
+                try:
+                    s_str, e_str = parts[1].split("-", 1)
+                    tc_start_sec = float(s_str)
+                    tc_end_sec = float(e_str)
+                except ValueError:
+                    pass
+
         # ── YouTube → massbots SDK ──
-        if service == "youtube" and self._massbots_enabled:
-            fallbacks = self._build_fallback_formats(video_format_id)
-            return self._youtube_download_via_sdk(url=url, format_str=video_format_id, fallback_formats=fallbacks)
+        # ВАЖНО: Если запрошен фрагмент (есть таймкоды), отключаем massbots и качаем через yt-dlp
+        if service == "youtube" and self._massbots_enabled and tc_start_sec is None:
+            fallbacks = self._build_fallback_formats(base_format_id)
+            sdk_result = self._youtube_download_via_sdk(url=url, format_str=base_format_id, fallback_formats=fallbacks)
+
+            if sdk_result.status == "success":
+                return sdk_result
+            else:
+                logger.warning(
+                    f"Massbots не справился ({sdk_result.context}). Включаем запасной план: локальный yt-dlp!")
+        # ── Логика работы с прогрессом ──
+        if on_progress:
+            def _yt_progress_hook(d):
+                try:
+                    if d.get("status") == "downloading":
+                        downloaded = d.get("downloaded_bytes", 0)
+                        total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
+                        speed = d.get("speed", 0)
+
+                        if total > 0:
+                            percent = (downloaded / total) * 100.0
+                        else:
+                            frag_idx = d.get("fragment_index", 0)
+                            frag_cnt = d.get("fragment_count")
+                            percent = (frag_idx / frag_cnt * 100.0) if frag_cnt else 0.0
+
+                        on_progress(min(percent, 99.9), downloaded, total, speed)
+                    elif d.get("status") == "finished":
+                        on_progress(100.0, 0, 0, 0)
+                except Exception:
+                    pass
+        else:
+            _yt_progress_hook = None
 
         # ── Остальные → yt-dlp ──
+        # Хэш генерируем из оригинального format_id (с таймкодами), чтобы фрагменты не затирали фулл видео в кэше
         safe = self._generate_safe_filename(url, video_format_id)
         file_path = self.output_path / f"{safe}.mp4"
 
+        # Везде дальше используем очищенный base_format_id
         if service == "instagram":
             format_str = "best[ext=mp4]/best"
-            # Downloader.py -> download_video()
         elif service == "pinterest":
-            if video_format_id == "best":
+            if base_format_id == "best":
                 format_str = "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
             else:
                 format_str = "best"
         elif service == "vk":
-            format_str = video_format_id or "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
+            format_str = base_format_id or "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
         elif service == "reddit":
-            # Если передан конкретный ID (например dash-9),
-            # мы просим yt-dlp взять его И лучшее подходящее аудио
-            if video_format_id and video_format_id != "best":
-                # Используем / для выбора альтернативы, если склейка невозможна
-                format_str = f"{video_format_id}+bestaudio/bestvideo+bestaudio/best"
+            if base_format_id and base_format_id != "best":
+                format_str = f"{base_format_id}+bestaudio/bestvideo+bestaudio/best"
             else:
                 format_str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
         else:
-            format_str = video_format_id
+            # Если к нам пришло "720p", переводим в формат yt-dlp
+            if service == "youtube" and base_format_id in QUALITY_MAP:
+                format_str = QUALITY_MAP[base_format_id]
+            else:
+                format_str = base_format_id
 
         if merge_audio and service != "instagram":
             format_str = f"{format_str}+bestaudio/best"
@@ -445,42 +508,55 @@ class Downloader:
         opts = self._yt_opts_for_service(service)
         opts.update({"outtmpl": str(file_path), "format": format_str, "merge_output_format": "mp4"})
 
+        # ─── 2. ПРИМЕНЯЕМ ОБРЕЗКУ ДЛЯ YT-DLP ───
+        if tc_start_sec is not None and tc_end_sec is not None:
+            from yt_dlp.utils import download_range_func
+            opts["download_ranges"] = download_range_func(None, [(tc_start_sec, tc_end_sec)])
+            opts["force_keyframes_at_cuts"] = True  # Улучшает точность обрезки
+
+        # Подключаем прогресс-бар к yt-dlp
+        if _yt_progress_hook:
+            opts["progress_hooks"] = [_yt_progress_hook]
+
         for attempt in (1, 2):
             try:
                 with YoutubeDL(opts) as ydl:
                     ydl.download([url])
                 _assert_nonempty_file(file_path)
-                # Перекодируем в H.264 если нужно (HEVC/VP9 не играет на мобильном Telegram)
-                if service in ("instagram", "tiktok", "vk"):
+
+                # Если скачали фрагмент, конвертируем в h264 для надежности на iPhone
+                if service in ("instagram", "tiktok", "vk") or tc_start_sec is not None:
                     _ensure_h264(file_path)
+
                 return AbstractResultModel(data=AbstractDataModel(url=url, path=str(file_path), is_video=True))
             except DownloadError as e:
                 if service == "youtube" and self._looks_like_yt_bot_block(e):
-                    if self.rutube_proxy and opts.get("proxy") != self.rutube_proxy:
-                        opts["proxy"] = self.rutube_proxy
+                    fallback_proxy = self.proxies.get("rutube")
+                    if fallback_proxy and opts.get("proxy") != fallback_proxy:
+                        opts["proxy"] = fallback_proxy
                         continue
                 return AbstractResultModel(status="error", context=f"Ошибка загрузки: {e}",
-                                           code=AbstractErrorCodeModel.DOWNLOAD_ERROR, data=AbstractDataModel(url=url))
+                                           code=AbstractErrorCodeModel.DOWNLOAD_ERROR,
+                                           data=AbstractDataModel(url=url))
             except Exception as e:
                 return AbstractResultModel(status="error", context=f"Неожиданная ошибка: {e}",
-                                           code=AbstractErrorCodeModel.UNEXPECTED_ERROR, data=AbstractDataModel(url=url))
+                                           code=AbstractErrorCodeModel.UNEXPECTED_ERROR,
+                                           data=AbstractDataModel(url=url))
 
         return AbstractResultModel(status="error", context="Исчерпаны попытки",
                                    code=AbstractErrorCodeModel.DOWNLOAD_ERROR, data=AbstractDataModel(url=url))
 
-    # ─── download_audio ─────────────────────────────────────────────
-
     def download_audio(
-        self,
-        url: str,
-        audio_format_id: str,
-        service: str = None,
+            self,
+            url: str,
+            audio_format_id: str,
+            service: str = None,
+            on_progress=None,  # <-- ДОБАВЛЕНО
     ) -> Union[AbstractResultModel, YoutubeDownloadResult]:
         logger.info("download_audio: url=%s fmt=%s service=%s", url, audio_format_id, service)
 
         # ── YouTube → massbots SDK → скачать видео → ffmpeg mp3 ──
         if service == "youtube" and self._massbots_enabled:
-            # 1. Получаем file_id через massbots (минимальный формат)
             sdk_result = self._youtube_download_via_sdk(
                 url=url,
                 format_str="240p",
@@ -489,12 +565,9 @@ class Downloader:
 
             if sdk_result.status != "success" or not sdk_result.file_id:
                 logger.warning("massbots audio: SDK failed (%s), fallback to yt-dlp", sdk_result.context)
-                # fallback на yt-dlp ниже
             else:
-                # 2. Скачиваем видео через api.telegram.org/getFile
                 video_path = self._download_file_from_telegram(sdk_result.file_id)
                 if video_path:
-                    # 3. Конвертируем в mp3
                     mp3_path = self._convert_video_to_mp3(video_path)
                     if mp3_path:
                         logger.info("YouTube audio ready via massbots+ffmpeg: %s", mp3_path)
@@ -506,17 +579,43 @@ class Downloader:
                 else:
                     logger.warning("getFile download failed, fallback to yt-dlp")
 
+        # ── Логика работы с прогрессом ──
+        if on_progress:
+            def _yt_audio_hook(d):
+                try:
+                    if d.get("status") == "downloading":
+                        downloaded = d.get("downloaded_bytes", 0)
+                        total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
+                        speed = d.get("speed", 0)
+                        percent = (downloaded / total * 100.0) if total > 0 else 0.0
+                        on_progress(min(percent, 99.9), downloaded, total, speed)
+                    elif d.get("status") == "finished":
+                        on_progress(100.0, 0, 0, 0)
+                except Exception:
+                    pass
+        else:
+            _yt_audio_hook = None
+
         # ── yt-dlp (все сервисы + YouTube fallback) ──
         safe = self._generate_safe_filename(url, audio_format_id)
         mp3_path = self.output_path / f"{safe}.mp3"
-        format_str = "bestaudio/best" if audio_format_id in ("bestaudio", "music", "", None) else str(audio_format_id)
-
+        if audio_format_id in ("bestaudio", "music", "", None):
+            format_str = "bestaudio/best"
+        elif service == "youtube" and audio_format_id in QUALITY_MAP:
+            # Для аудио берем просто лучшее аудио, игнорируя видео-часть из QUALITY_MAP
+            format_str = "bestaudio/best"
+        else:
+            format_str = str(audio_format_id)
         opts = self._yt_opts_for_service(service)
         opts.update({
             "outtmpl": str(self.output_path / f"{safe}.%(ext)s"),
             "format": format_str,
             "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
         })
+
+        # Подключаем прогресс-бар к yt-dlp
+        if _yt_audio_hook:
+            opts["progress_hooks"] = [_yt_audio_hook]
 
         for attempt in (1, 2):
             try:
@@ -533,11 +632,11 @@ class Downloader:
                                            code=AbstractErrorCodeModel.DOWNLOAD_ERROR, data=AbstractDataModel(url=url))
             except Exception as e:
                 return AbstractResultModel(status="error", context=f"Неожиданная ошибка аудио: {e}",
-                                           code=AbstractErrorCodeModel.UNEXPECTED_ERROR, data=AbstractDataModel(url=url))
+                                           code=AbstractErrorCodeModel.UNEXPECTED_ERROR,
+                                           data=AbstractDataModel(url=url))
 
         return AbstractResultModel(status="error", context="Исчерпаны попытки аудио",
                                    code=AbstractErrorCodeModel.DOWNLOAD_ERROR, data=AbstractDataModel(url=url))
-
     # ─── download_direct_media ──────────────────────────────────────
 
     def download_direct_media(self, url: str, file_extension: str) -> AbstractResultModel:

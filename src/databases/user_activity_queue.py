@@ -19,7 +19,7 @@ class UserActivityQueue(RedisBase):
     Каждая задача хранится с TTL для автоматической очистки неактивных сессий.
     """
     
-    def __init__(self, host: str, port: int, db: int, ttl: int = 7200):
+    def __init__(self, host: str, port: int, db: int, ttl: int = 600):
         """
         Инициализация очереди пользовательской активности.
         

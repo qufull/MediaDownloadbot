@@ -1,7 +1,7 @@
 # src/celery_app/tasks/extract.py
 import logging
 from typing import List
-
+from src.celery_app.app import shared_loop
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
@@ -11,10 +11,11 @@ from src.config import settings
 from src.core import ResultDictAnnotation, AbstractErrorCodeModel
 from src.config import user_activity_queue, media_cache_storage, user_session_storage, file_id_cache
 
-from ..app import celery_app, celery_event_loop
+from ..app import celery_app
 from .texts import MessageTemplates
 from .common import MediaProcessor, create_keyboard_layout, get_extractor, get_inline_keyboard
 from src.utils.telegram_anim import send_error
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -203,14 +204,16 @@ async def handle_error_response(
 def extract_info(chat_id: int, message_id: int, url: str, service: str) -> None:
     logger.info(f"[extract_info] Celery-задача запущена: chat_id={chat_id}, service={service}, url={url}")
     try:
-        celery_event_loop.run_until_complete(
+        future = asyncio.run_coroutine_threadsafe(
             async_extract_info(
                 url=url,
                 service=service,
                 chat_id=chat_id,
                 message_id=message_id,
-            )
+            ),
+            shared_loop
         )
+        future.result()
         logger.info(f"[extract_info] Celery-задача завершена успешно: chat_id={chat_id}")
     except Exception as e:
         logger.exception(f"[extract_info] Ошибка выполнения celery-задачи: {e}")

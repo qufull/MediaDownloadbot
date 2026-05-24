@@ -56,7 +56,11 @@ def get_retry_subscription_keyboard(missing_subscriptions: list) -> InlineKeyboa
 
 def get_admin_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📤 Рассылка")]],
+        keyboard=[
+            [KeyboardButton(text="📤 Рассылка"), KeyboardButton(text="🎁 Выдача дней")],
+            [KeyboardButton(text="👑 Управление Premium")],
+            [KeyboardButton(text="👥 Показать кол-во пользователей")]
+        ],
         resize_keyboard=True
     )
 
@@ -82,3 +86,42 @@ def get_broadcast_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎯 Отправить НЕ премиум", callback_data="broadcast:free")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast:cancel")]
     ])
+
+
+def get_timecode_choice_keyboard(chosen_id: str = "") -> InlineKeyboardMarkup:
+    """
+    Клавиатура выбора: скачать видео целиком или вырезать фрагмент.
+    """
+    builder = InlineKeyboardBuilder()
+
+    builder.add(
+        InlineKeyboardButton(
+            text="🎬 Полностью",
+            callback_data="full_dl"
+        ),
+        InlineKeyboardButton(
+            text="✂️ Фрагмент",
+            callback_data="frag_dl"
+        )
+    )
+
+    # Размещаем кнопки в один ряд (две кнопки рядом)
+    builder.adjust(2)
+
+    return builder.as_markup()
+
+
+def get_timecode_cancel_keyboard() -> InlineKeyboardMarkup:
+    """
+    Клавиатура для отмены ввода таймкодов.
+    """
+    builder = InlineKeyboardBuilder()
+
+    builder.add(
+        InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data="tc_cancel"
+        )
+    )
+
+    return builder.as_markup()

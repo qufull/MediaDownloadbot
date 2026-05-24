@@ -6,12 +6,12 @@ logger = logging.getLogger(__name__)
 
 async def send_vpn_ad(chat_id: int) -> None:
     """Универсальная функция для отправки рекламы VPN."""
-    vpn_url = "https://t.me/skynetaivpn_bot"  # Твоя ссылка
+    vpn_url = "https://t.me/vpnskynetai_bot?start=318875085"  # Твоя ссылка
 
     text = (
-        f"💛 Наш <a href='{vpn_url}'>Skynet VPN</a> — лучший ВПН!\n"
+        f"💙 Подключись к <a href='https://t.me/vpnskynetai_bot?start=318875085'>Skynet VPN</a> и используй Premium функции бесплатно.\n"
         "<blockquote>"
-        "🔮 Обход глушилок ❞\n"
+        "🏳️ Обход глушилок ❞\n"
         "🌍 Разные локации\n"
         "📱 Несколько устройств\n"
         "🌐 Безлимит на трафик\n"

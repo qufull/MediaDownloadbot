@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 
 import logging
 
+from urllib3.util import proxy
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,12 @@ logger.warning(">>> MASSBOTS BUILD: YouTube через massbots API, yt-dlp дл
 downloader = Downloader(
     output_path=settings.local_storage.media_storage_path,
     cookie_path=settings.local_storage.browser_cookie_path,
-    rutube_proxy=settings.proxy.rutube_proxy,
+    proxies={
+        "reddit": settings.proxy.youtube_proxy,
+        "instagram": settings.proxy.youtube_proxy,
+        "youtube": settings.proxy.youtube_proxy,
+        "tiktok": None
+    },
     massbots_token=settings.massbots.token,
     massbots_bot_id=settings.massbots.bot_id,
     bot_token=settings.telegram.token,
@@ -61,6 +67,7 @@ downloader = Downloader(
 reddit_extractor = RedditExtractor(
     client_id=settings.reddit.client_id,
     client_secret=settings.reddit.client_secret,
+    proxy=settings.proxy.youtube_proxy,
     cookie_path=settings.local_storage.browser_cookie_path,
 )
 
@@ -75,6 +82,7 @@ rutube_extractor = RutubeExtractor(
 
 instagram_extractor = InstagramExtractor(
     cookie_path=settings.local_storage.browser_cookie_path,
+    proxy=settings.proxy.youtube_proxy,
 )
 
 twitter_extractor = TwitterExtractor(
@@ -130,7 +138,8 @@ media_rate_limiter = MediaRateLimiter(
 session = AiohttpSession(
     api=TelegramAPIServer.from_base(
         base=settings.telegram.server_url
-    )
+    ),
+    timeout=300
 )
 
 default_properties = DefaultBotProperties(

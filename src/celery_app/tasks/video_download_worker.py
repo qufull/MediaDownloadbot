@@ -1,19 +1,21 @@
-# src/celery_app/tasks/video_download_worker.py
+import asyncio
 import logging
 import json
+import threading
 import urllib.request
 import urllib.parse
 import urllib.error
 from pathlib import Path
+import concurrent.futures
 
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+from celery.exceptions import SoftTimeLimitExceeded  # <-- ДОБАВЛЕН ИМПОРТ
 
 from src.utils.ads import send_vpn_ad
 from ..app import celery_app
-from ..app import celery_event_loop
 from .texts import MessageTemplates
 
 from src.config import bot
@@ -27,36 +29,49 @@ from src.config import file_id_cache
 from src.config import media_rate_limiter
 
 from src.utils.video_thumbnail import make_video_thumbnail
-from src.utils.telegram_anim import send_waiting, send_error
+from src.utils.telegram_anim import send_error, send_waiting
+from src.celery_app.app import shared_loop
 
 logger = logging.getLogger(__name__)
 
 
-# ─── Telegram API helpers (обход локального Bot API server) ──────────
+# ─── Progress bar helpers ────────────────────────────────────────────
+
+def _fmt_bytes(b: int) -> str:
+    if b >= 1 << 30:
+        return f"{b / (1 << 30):.1f} ГБ"
+    if b >= 1 << 20:
+        return f"{b / (1 << 20):.1f} МБ"
+    if b >= 1 << 10:
+        return f"{b / (1 << 10):.1f} КБ"
+    return f"{b} Б"
+
+
+def _make_progress_caption(percent: float, downloaded: int, total: int, speed: float) -> str:
+    filled = max(0, min(20, round(percent / 5)))
+    bar = "█" * filled + "░" * (20 - filled)
+    text = (
+        f"⬇️ <b>Загрузка...</b>\n\n"
+        f"<code>[{bar}]</code>  <b>{percent:.1f}%</b>"
+    )
+    if total > 0:
+        text += f"\n📦 {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}"
+    if speed > 0:
+        text += f"\n⚡️ {_fmt_bytes(int(speed))}/с"
+    return text
+
+
+# ─── Telegram API helpers ──────────────────────────────────────────
 
 def _send_video_via_telegram_api(
-    bot_token: str,
-    chat_id: int,
-    file_id: str,
-    caption: str = "",
-    width: int = 0,
-    height: int = 0,
+        bot_token: str,
+        chat_id: int,
+        file_id: str,
+        caption: str = "",
+        width: int = 0,
+        height: int = 0,
 ) -> dict:
-    """
-    Отправляет видео через api.telegram.org напрямую.
-    Нужно потому что file_id от massbots привязан к обычному Telegram API,
-    а локальный Bot API server использует несовместимые file_id.
-    """
     url = f"https://api.telegram.org/bot{bot_token}/sendVideo"
-
-    logger.info(
-        "sendVideo via api.telegram.org: chat_id=%s file_id=%s... w=%s h=%s",
-        chat_id,
-        file_id[:40] if file_id else "None",
-        width,
-        height,
-    )
-
     payload = {
         "chat_id": chat_id,
         "video": file_id,
@@ -64,10 +79,8 @@ def _send_video_via_telegram_api(
         "supports_streaming": "true",
         "parse_mode": "HTML",
     }
-    if width and width > 0:
-        payload["width"] = width
-    if height and height > 0:
-        payload["height"] = height
+    if width and width > 0: payload["width"] = width
+    if height and height > 0: payload["height"] = height
 
     data = urllib.parse.urlencode(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
@@ -75,15 +88,9 @@ def _send_video_via_telegram_api(
 
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            body = resp.read().decode("utf-8")
-            return json.loads(body)
-    except urllib.error.HTTPError as he:
-        error_body = ""
-        try:
-            error_body = he.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        logger.error("sendVideo HTTP %s: %s", he.code, error_body[:500])
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        logger.error(f"Error in _send_video_via_telegram_api: {e}")
         raise
 
 
@@ -97,201 +104,209 @@ def _is_nonempty_file(path: str) -> bool:
         return False
 
 
-def _resolve_media(value: str):
-    p = Path(value)
-    return FSInputFile(str(p)) if p.exists() else value
-
-
 def _get_standard_quality(width: int, height: int) -> int:
-    """Превращает любые кривые размеры в красивый стандарт (1080, 720, 480)."""
-    w = int(width) if width else 0
-    h = int(height) if height else 0
-
-    if w > 0 and h > 0:
-        raw_q = min(w, h)
-    elif h > 0:
-        mapping = {1920: 1080, 1280: 720, 854: 480, 640: 360, 2560: 1440, 3840: 2160}
-        raw_q = mapping.get(h, h)
-    else:
-        raw_q = w
-
+    w, h = (int(width) if width else 0), (int(height) if height else 0)
+    raw_q = min(w, h) if w > 0 and h > 0 else (h or w)
     for std in [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]:
-        if abs(raw_q - std) <= 50:
-            return std
+        if abs(raw_q - std) <= 50: return std
     return raw_q
+
 
 # ─── Main download function ─────────────────────────────────────────
 
 async def async_download_video(
-    url: str,
-    width: int,
-    height: int,
-    chat_id: int,
-    service: str,
-    video_id: str,
-    message_id: int,
-    merge_audio: bool,
+        url: str,
+        width: int,
+        height: int,
+        chat_id: int,
+        service: str,
+        video_id: str,
+        message_id: int,
+        merge_audio: bool,
 ) -> None:
-    logger.info(
-        f"[async_download_video] Запуск: chat_id={chat_id}, "
-        f"service={service}, url={url}, height={height}p"
-    )
-
     try:
-        # Проверяем кэш file_id
-        cached_file_id = file_id_cache.get_file_id(url=url, height=height)
-        if cached_file_id:
-            logger.info("[async_download_video] Найден file_id в кэше")
-            await send_cached_video(
-                url=url,
-                width=width,
-                height=height,
-                chat_id=chat_id,
-                service=service,
-                file_id=cached_file_id,
-            )
-            return
+        is_fragment = "|" in video_id
 
-        # Показать анимацию ожидания загрузки (load.mp4)
-        waiting_msg = await send_waiting(
-            chat_id=chat_id,
-            text=MessageTemplates.DOWNLOAD_STARTED,
-            reply_to_message_id=message_id,
-        )
-
-        async with ChatActionSender(
-            bot=bot,
-            chat_id=chat_id,
-            action=ChatAction.RECORD_VIDEO,
-        ):
-            result = downloader.download_video(
-                url=url,
-                merge_audio=merge_audio,
-                video_format_id=video_id,
-                service=service,
-            )
-
-        # ── YouTube через massbots — file_id через api.telegram.org ──
-        if isinstance(result, YoutubeDownloadResult):
-            # NB: YoutubeDownloadResult.status == "success" (не "ready")
-            if result.status != "success" or not result.file_id:
-                logger.error(
-                    f"[async_download_video] massbots error: {result.context}"
-                )
-                if waiting_msg:
-                    try:
-                        await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
-                    except Exception:
-                        pass
-                await send_error(
-                    chat_id=chat_id,
-                    text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
-                )
+        # 1. Проверка кэша (только если качаем видео целиком)
+        if not is_fragment:
+            cached_file_id = file_id_cache.get_file_id(url=url, height=height)
+            if cached_file_id:
+                await send_cached_video(url, width, height, chat_id, service, cached_file_id)
                 return
 
-            # Собираем caption
-            info = media_cache_storage.get_media(url=url)
-            if info and info.get("data"):
-                original_url = info["data"].get("url", "")
-                author_name = info["data"].get("author_name", "Unknown")
-            else:
-                original_url = url
-                author_name = "Unknown"
-
-            display_quality = _get_standard_quality(width, height)
-            caption = MessageTemplates.DOWNLOAD_VIDEO_CAPTION.format(
-                width=width or "?",
-                height=display_quality or "?",
-                service=service,
-                url=original_url,
-                botname=settings.telegram.name,
-                author_name=author_name,
+        # 2. Инициализация уведомлений
+        if service == "youtube":
+            waiting_msg = await send_waiting(
+                chat_id=chat_id,
+                text=MessageTemplates.DOWNLOAD_STARTED,
+                reply_to_message_id=message_id,
+            )
+        else:
+            waiting_msg = await bot.send_message(
+                chat_id=chat_id,
+                text=MessageTemplates.DOWNLOAD_STARTED,
+                reply_to_message_id=message_id,
             )
 
-            try:
-                resp = _send_video_via_telegram_api(
-                    bot_token=settings.telegram.token,
-                    chat_id=chat_id,
-                    file_id=result.file_id,
-                    caption=caption,
-                    width=width or 0,
-                    height=height or 0,
-                )
-                if resp.get("ok"):
-                    logger.info(
-                        "[async_download_video] massbots video "
-                        "sent via api.telegram.org"
-                    )
-                    media_rate_limiter.increment(chat_id, service=service)
-                    # Кэшируем file_id
-                    file_id_cache.store_file_id(
-                        url=url,
-                        height=height,
-                        width=width,
-                        file_id=result.file_id,
-                    )
-                    # Удаляем ожидание ПОСЛЕ успешной отправки видео
-                    if waiting_msg:
-                        try:
-                            await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
-                        except Exception:
-                            pass
-                    await send_vpn_ad(chat_id)
-                else:
-                    logger.error(
-                        f"[async_download_video] sendVideo response not ok: {resp}"
-                    )
-                    if waiting_msg:
-                        try:
-                            await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
-                        except Exception:
-                            pass
-                    await send_error(
-                        chat_id=chat_id,
-                        text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
-                    )
-            except Exception as e:
-                logger.exception(
-                    f"[async_download_video] sendVideo via api.telegram.org "
-                    f"failed: {e}"
-                )
-                if waiting_msg:
+        # 3. Настройка прогресс-бара
+        progress_state = {
+            "percent": 0.0, "downloaded": 0, "total": 0, "speed": 0.0,
+            "done": False, "lock": threading.Lock(),
+        }
+
+        def _progress_callback(percent, downloaded, total, speed):
+            with progress_state["lock"]:
+                progress_state["percent"] = percent
+                progress_state["downloaded"] = downloaded
+                progress_state["total"] = total
+                progress_state["speed"] = float(speed or 0)
+                if percent >= 99.9: progress_state["done"] = True
+
+        progress_msg = await bot.send_message(
+            chat_id=chat_id,
+            text=_make_progress_caption(0.0, 0, 0, 0),
+            parse_mode="HTML",
+            reply_to_message_id=waiting_msg.message_id if waiting_msg else message_id,
+        )
+
+        async def _progress_updater():
+            last_pct = -1.0
+            while not progress_state["done"]:
+                await asyncio.sleep(1.5)
+                with progress_state["lock"]:
+                    pct, d, t, spd = progress_state["percent"], progress_state["downloaded"], progress_state["total"], \
+                        progress_state["speed"]
+
+                if pct >= 99.9 or abs(pct - last_pct) >= 5.0:
+                    last_pct = pct
                     try:
-                        await bot.delete_message(chat_id=chat_id, message_id=waiting_msg.message_id)
+                        await bot.edit_message_text(
+                            chat_id=chat_id, message_id=progress_msg.message_id,
+                            text=_make_progress_caption(pct, d, t, spd), parse_mode="HTML"
+                        )
                     except Exception:
                         pass
-                await send_error(
-                    chat_id=chat_id,
-                    text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
-                )
-            return
 
-        # ── Обычные сервисы (yt-dlp) ──
-        info = media_cache_storage.get_media(url=url)
-        await handle_download_result(
-            url=url,
-            width=width,
-            height=height,
-            result=result,
-            media_info=info,
-            chat_id=chat_id,
-            service=service,
-            message_id=waiting_msg.message_id if waiting_msg else None,
+        # 4. Запуск скачивания
+        updater_task = asyncio.create_task(_progress_updater())
+        loop = asyncio.get_event_loop()
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: downloader.download_video(
+                url=url, merge_audio=merge_audio,
+                video_format_id=video_id, service=service,
+                on_progress=_progress_callback
+            )
         )
-        logger.info(
-            f"[async_download_video] Завершено: chat_id={chat_id}, "
-            f"status={result.status}"
-        )
+
+        progress_state["done"] = True
+        await updater_task
+
+        # 5. Обработка результата
+        if isinstance(result, YoutubeDownloadResult):
+            if result.status != "success" or not result.file_id:
+                error_context = result.context if result.context else "Неизвестная ошибка Massbots"
+                raise Exception(f"Massbots download failed: {error_context}")
+
+            info = media_cache_storage.get_media(url=url) or {}
+            caption = MessageTemplates.DOWNLOAD_VIDEO_CAPTION.format(
+                width=width or "?", height=_get_standard_quality(width, height),
+                service=service, url=url, botname=settings.telegram.name,
+                author_name=info.get("data", {}).get("author_name", "Unknown")
+            )
+
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(
+                None,
+                lambda: _send_video_via_telegram_api(
+                    settings.telegram.token, chat_id, result.file_id, caption, width, height
+                )
+            )
+
+            if resp.get("ok"):
+                media_rate_limiter.increment(chat_id, service=service)
+                if not is_fragment:
+                    file_id_cache.store_file_id(url=url, file_id=result.file_id, width=width, height=height)
+
+                for m in [waiting_msg, progress_msg]:
+                    if m: await bot.delete_message(chat_id, m.message_id)
+                await send_vpn_ad(chat_id)
+            else:
+                raise Exception(f"API send failed: {resp}")
+        else:
+            await handle_download_result(
+                url=url, width=width, height=height, result=result,
+                media_info=media_cache_storage.get_media(url=url),
+                chat_id=chat_id, service=service,
+                message_ids=[waiting_msg.message_id, progress_msg.message_id],
+                is_fragment=is_fragment
+            )
 
     except Exception as e:
-        logger.exception(f"[async_download_video] Ошибка при скачивании видео: {e}")
-        await send_error(
-            chat_id=chat_id,
-            text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
-        )
+        logger.exception(f"Download error: {e}")
+        await send_error(chat_id, MessageTemplates.DOWNLOAD_VIDEO_ERROR)
     finally:
         user_activity_queue.delete_download(chat_id=chat_id)
 
+
+# ─── handle_download_result (yt-dlp path) ───────────────────────────
+
+async def handle_download_result(
+        url: str,
+        width: int,
+        height: int,
+        chat_id: int,
+        service: str,
+        message_ids: list[int] | None,
+        media_info: dict,
+        result: AbstractResultModel,
+        is_fragment: bool = False
+):
+    logger.info(f"[handle_download_result] chat_id={chat_id}, status={result.status}")
+
+    async def _cleanup():
+        for mid in (message_ids or []):
+            if mid:
+                try:
+                    await bot.delete_message(chat_id, mid)
+                except Exception:
+                    pass
+
+    if result.status != "success" or not result.data or not getattr(result.data, "path", None) or not _is_nonempty_file(
+            result.data.path):
+        await _cleanup()
+        await send_error(chat_id, MessageTemplates.DOWNLOAD_VIDEO_ERROR)
+        return
+
+    video_path = result.data.path
+    caption = MessageTemplates.DOWNLOAD_VIDEO_CAPTION.format(
+        width=width or "?", height=_get_standard_quality(width, height),
+        service=service, url=url, botname=settings.telegram.name,
+        author_name=media_info.get("data", {}).get("author_name", "Unknown") if media_info else "Unknown"
+    )
+
+    try:
+        async with ChatActionSender(bot=bot, chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO):
+            thumb_path = make_video_thumbnail(video_path, str(Path(video_path).parent))
+            sent_message = await bot.send_video(
+                chat_id=chat_id, video=FSInputFile(video_path), caption=caption,
+                width=width, height=height,
+                thumbnail=FSInputFile(str(thumb_path)) if thumb_path else None,
+                supports_streaming=True, request_timeout=1200
+            )
+            if sent_message.video:
+                if not is_fragment:
+                    file_id_cache.store_file_id(url=url, file_id=sent_message.video.file_id, width=width, height=height)
+                media_rate_limiter.increment(chat_id, service=service)
+                await send_vpn_ad(chat_id)
+
+        await _cleanup()
+    except Exception as e:
+        logger.error(f"Send failed: {e}")
+        await _cleanup()
+        await send_error(chat_id, MessageTemplates.DOWNLOAD_VIDEO_ERROR)
 
 # ─── Cached video ───────────────────────────────────────────────────
 
@@ -341,15 +356,11 @@ async def send_cached_video(
             if height and height > 0:
                 send_kwargs["height"] = height
 
-            # --- ИСПРАВЛЕНИЕ ОШИБКИ КЭША ---
             try:
-                # Пытаемся отправить через локальный сервер (для TikTok, IG, ВК и т.д.)
                 await bot.send_video(**send_kwargs)
             except Exception as bot_err:
                 if "wrong file identifier" in str(bot_err).lower():
-                    logger.warning(
-                        "[send_cached_video] Локальный API не знает этот file_id. Пробуем через публичный API...")
-                    # Отправляем через публичный API (для закэшированного YouTube)
+                    logger.warning("[send_cached_video] Локальный API не знает этот file_id. Пробуем через публичный API...")
                     resp = _send_video_via_telegram_api(
                         bot_token=settings.telegram.token,
                         chat_id=chat_id,
@@ -361,9 +372,7 @@ async def send_cached_video(
                     if not resp.get("ok"):
                         raise Exception(f"Ошибка публичного API при отправке кэша: {resp}")
                 else:
-                    # Если ошибка другая (например, юзер заблокировал бота), прокидываем её дальше
                     raise bot_err
-            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             media_rate_limiter.increment(chat_id, service=service)
 
@@ -380,163 +389,22 @@ async def send_cached_video(
         user_activity_queue.delete_download(chat_id=chat_id)
 
 
-# ─── handle_download_result (yt-dlp path) ───────────────────────────
-
-async def handle_download_result(
-    url: str,
-    width: int,
-    height: int,
-    chat_id: int,
-    service: str,
-    message_id: int | None,
-    media_info: dict,
-    result: AbstractResultModel,
-):
-    logger.info(f"[handle_download_result] chat_id={chat_id}, status={result.status}")
-
-    if result.status != "success":
-        # Удаляем ожидание при ошибке
-        if message_id:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except Exception:
-                pass
-        await send_error(
-            chat_id=chat_id,
-            text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
-        )
-        return
-
-    if (
-        not result.data
-        or not getattr(result.data, "path", None)
-        or not _is_nonempty_file(result.data.path)
-    ):
-        logger.error("[handle_download_result] success без файла")
-        if message_id:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except Exception:
-                pass
-        await send_error(
-            chat_id=chat_id,
-            text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
-        )
-        return
-
-    if media_info and media_info.get("data"):
-        original_url = media_info["data"].get("url", "")
-        author_name = media_info["data"].get("author_name", "Unknown")
-    else:
-        original_url = ""
-        author_name = "Unknown"
-
-    video_path = result.data.path
-
-    # Определяем реальные размеры через ffprobe (если экстрактор не определил)
-    if not width or not height:
-        from src.utils.video_thumbnail import get_video_dimensions
-        probe_w, probe_h = get_video_dimensions(video_path)
-        if probe_w and probe_h:
-            width = probe_w
-            height = probe_h
-            logger.info(f"[handle_download_result] ffprobe dimensions: {width}x{height}")
-
-    display_quality = _get_standard_quality(width, height)
-    caption = MessageTemplates.DOWNLOAD_VIDEO_CAPTION.format(
-        width=width or "?",
-        height=display_quality or "?",
-        service=service,
-        url=original_url,
-        botname=settings.telegram.name,
-        author_name=author_name,
-    )
-
-    thumb_file = None
-    try:
-        thumb_path = make_video_thumbnail(
-            video_path=video_path,
-            out_dir=str(Path(video_path).parent),
-        )
-        if thumb_path and thumb_path.exists():
-            thumb_file = FSInputFile(str(thumb_path))
-    except Exception as e:
-        logger.warning(f"[handle_download_result] Thumbnail failed: {e}")
-
-    try:
-        async with ChatActionSender(
-            bot=bot,
-            chat_id=chat_id,
-            action=ChatAction.UPLOAD_VIDEO,
-        ):
-            kwargs = dict(
-                chat_id=chat_id,
-                caption=caption,
-                request_timeout=1200,
-                supports_streaming=True,
-                video=FSInputFile(path=video_path),
-            )
-            if width and width > 0:
-                kwargs["width"] = width
-            if height and height > 0:
-                kwargs["height"] = height
-            if thumb_file:
-                kwargs["thumbnail"] = thumb_file
-
-            try:
-                sent_message = await bot.send_video(**kwargs)
-            except TypeError:
-                kwargs.pop("thumbnail", None)
-                sent_message = await bot.send_video(**kwargs)
-
-            if sent_message and sent_message.video:
-                media_rate_limiter.increment(chat_id, service=service)
-                file_id_cache.store_file_id(
-                    url=url,
-                    height=height,
-                    width=width,
-                    file_id=sent_message.video.file_id,
-                )
-                await send_vpn_ad(chat_id)
-                logger.info("[handle_download_result] file_id сохранён в кэш")
-
-        # Удаляем сообщение ожидания
-        if message_id:
-            try:
-                await bot.delete_message(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                )
-            except Exception:
-                pass
-    except Exception as e:
-        logger.exception(f"[handle_download_result] Ошибка отправки: {e}")
-        if message_id:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except Exception:
-                pass
-        await send_error(
-            chat_id=chat_id,
-            text=MessageTemplates.DOWNLOAD_VIDEO_ERROR,
-        )
-
-
 # ─── Celery tasks ───────────────────────────────────────────────────
 
 def _run_video_task(
-    service,
-    url,
-    width,
-    height,
-    chat_id,
-    video_id,
-    message_id,
-    merge_audio,
+        service,
+        url,
+        width,
+        height,
+        chat_id,
+        video_id,
+        message_id,
+        merge_audio,
 ):
     logger.info(f"[{service}] Celery-задача: chat_id={chat_id}, url={url}")
     try:
-        celery_event_loop.run_until_complete(
+        # Запускаем задачу в фоновом цикле
+        future = asyncio.run_coroutine_threadsafe(
             async_download_video(
                 url=url,
                 width=width,
@@ -546,133 +414,121 @@ def _run_video_task(
                 video_id=video_id,
                 message_id=message_id,
                 merge_audio=merge_audio,
-            )
+            ),
+            shared_loop
         )
+
+        # === УСТАНАВЛИВАЕМ РАЗНЫЕ ТАЙМАУТЫ ===
+        # Для YouTube: 180 секунд (3 минуты)
+        # Для остальных: 1200 секунд (20 минут)
+        timeout_limit = 180 if service == "youtube" else 1200
+
+        # Поток будет ждать завершения задачи ровно timeout_limit секунд
+        future.result(timeout=timeout_limit)
+
+    except concurrent.futures.TimeoutError:
+        # Если время вышло, принудительно отменяем задачу
+        future.cancel()
+        logger.error(f"[{service}] Превышен лимит времени ({timeout_limit} сек) для задачи: {url}")
+
+        # Очищаем очередь пользователя
+        user_activity_queue.delete_download(chat_id=chat_id)
+
+        # Безопасно отправляем извинение пользователю
+        asyncio.run_coroutine_threadsafe(
+            bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ <b>Видео слишком тяжелое!</b>\nСкачивание заняло больше {timeout_limit // 60} минут и было прервано. Пожалуйста, выберите видео покороче.",
+                parse_mode="HTML",
+                reply_to_message_id=message_id
+            ),
+            shared_loop
+        )
+
     except Exception as e:
         logger.exception(f"[{service}] Ошибка celery-задачи: {e}")
-
+        user_activity_queue.delete_download(chat_id=chat_id)
 
 @celery_app.task(name="download_twitter_video", queue="download_twitter_queue")
-def download_twitter_video(
-    url, width, height, chat_id, video_id, message_id, merge_audio
-):
-    _run_video_task(
-        "twitter",
-        url,
-        width,
-        height,
-        chat_id,
-        video_id,
-        message_id,
-        merge_audio,
-    )
+def download_twitter_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("twitter", url, width, height, chat_id, video_id, message_id, merge_audio)
 
 
 @celery_app.task(name="download_youtube_video", queue="download_youtube_queue")
-def download_youtube_video(
-    url, width, height, chat_id, video_id, message_id, merge_audio
-):
-    _run_video_task(
-        "youtube",
-        url,
-        width,
-        height,
-        chat_id,
-        video_id,
-        message_id,
-        merge_audio,
-    )
+def download_youtube_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("youtube", url, width, height, chat_id, video_id, message_id, merge_audio)
 
 
 @celery_app.task(name="download_rutube_video", queue="download_rutube_queue")
-def download_rutube_video(
-    url, width, height, chat_id, video_id, message_id, merge_audio
-):
-    _run_video_task(
-        "rutube",
-        url,
-        width,
-        height,
-        chat_id,
-        video_id,
-        message_id,
-        merge_audio,
-    )
+def download_rutube_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("rutube", url, width, height, chat_id, video_id, message_id, merge_audio)
 
 
 @celery_app.task(name="download_reddit_video", queue="download_reddit_queue")
-def download_reddit_video(
-    url, width, height, chat_id, video_id, message_id, merge_audio
-):
-    _run_video_task(
-        "reddit",
-        url,
-        width,
-        height,
-        chat_id,
-        video_id,
-        message_id,
-        merge_audio,
-    )
+def download_reddit_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("reddit", url, width, height, chat_id, video_id, message_id, merge_audio)
 
 
 @celery_app.task(name="download_tiktok_video", queue="download_tiktok_queue")
-def download_tiktok_video(
-    url, width, height, chat_id, video_id, message_id, merge_audio
-):
-    _run_video_task(
-        "tiktok",
-        url,
-        width,
-        height,
-        chat_id,
-        video_id,
-        message_id,
-        merge_audio,
-    )
+def download_tiktok_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("tiktok", url, width, height, chat_id, video_id, message_id, merge_audio)
 
 
 @celery_app.task(name="download_instagram_video", queue="download_instagram_queue")
-def download_instagram_video(
-    url, width, height, chat_id, video_id, message_id, merge_audio
-):
-    _run_video_task(
-        "instagram",
-        url,
-        width,
-        height,
-        chat_id,
-        video_id,
-        message_id,
-        merge_audio,
-    )
+def download_instagram_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("instagram", url, width, height, chat_id, video_id, message_id, merge_audio)
 
 
 @celery_app.task(name="download_vk_video", queue="download_vk_queue")
-def download_vk_video(
-    url, width, height, chat_id, video_id, message_id, merge_audio
-):
-    _run_video_task(
-        "vk",
-        url,
-        width,
-        height,
-        chat_id,
-        video_id,
-        message_id,
-        merge_audio,
-    )
+def download_vk_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("vk", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
 @celery_app.task(name="download_pinterest_video", queue="download_pinterest_queue")
-def download_pinterest_video(
-    url, width, height, chat_id, video_id, message_id, merge_audio
-):
-    _run_video_task(
-        "pinterest",
-        url,
-        width,
-        height,
-        chat_id,
-        video_id,
-        message_id,
-        merge_audio,
-    )
+def download_pinterest_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("pinterest", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
+@celery_app.task(name="download_vimeo_video", queue="download_generic_queue")
+def download_vimeo_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("vimeo", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
+@celery_app.task(name="download_dailymotion_video", queue="download_generic_queue")
+def download_dailymotion_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("dailymotion", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
+@celery_app.task(name="download_facebook_video", queue="download_generic_queue")
+def download_facebook_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("facebook", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
+@celery_app.task(name="download_okru_video", queue="download_generic_queue")
+def download_okru_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("okru", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
+@celery_app.task(name="download_twitch_video", queue="download_generic_queue")
+def download_twitch_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("twitch", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
+@celery_app.task(name="download_kick_video", queue="download_generic_queue")
+def download_kick_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("kick", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
+@celery_app.task(name="download_rumble_video", queue="download_generic_queue")
+def download_rumble_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("rumble", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
+@celery_app.task(name="download_coub_video", queue="download_generic_queue")
+def download_coub_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("coub", url, width, height, chat_id, video_id, message_id, merge_audio)
+
+
+@celery_app.task(name="download_soundcloud_video", queue="download_generic_queue")
+def download_soundcloud_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("soundcloud", url, width, height, chat_id, video_id, message_id, merge_audio)

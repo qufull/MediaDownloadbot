@@ -1,10 +1,19 @@
 from celery import Celery
-from asyncio import new_event_loop
+import asyncio
+import threading
 from celery.schedules import crontab
 
 from src.config import settings
 
-celery_event_loop = new_event_loop()
+shared_loop = asyncio.new_event_loop()
+
+def _start_background_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+# 2. Запускаем этот цикл в отдельном фоновом потоке навсегда
+loop_thread = threading.Thread(target=_start_background_loop, args=(shared_loop,), daemon=True)
+loop_thread.start()
 
 celery_app = Celery(
     "src.celery_app.tasks.app",

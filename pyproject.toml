@@ -15,4 +15,5 @@ dependencies = [
     "massbots",
     "fastapi",
     "uvicorn",
+    "gevent",
 ]

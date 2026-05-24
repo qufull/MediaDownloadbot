@@ -31,18 +31,16 @@ class UserRegistrationMiddleware(BaseMiddleware):
 
         if user and not user.is_bot:
             user_id = user.id
+            username = user.username  # <--- БЕРЕМ ЮЗЕРНЕЙМ ИЗ TELEGRAM
 
             # Определяем, является ли текущее сообщение командой /start
             is_start_command = False
-            if isinstance(event, Message) and event.text:
+            if hasattr(event, "text") and event.text: # Более безопасная проверка для aiogram 3
                 is_start_command = event.text.strip().startswith("/start")
 
-            # Логика:
-            # Если это НЕ /start, регистрируем пользователя (обычная активность)
-            # Если это /start, ничего не делаем — хендлер handle_start сам вызовет
-            # user_registry.add_user с нужным referrer_id.
+            # Если это НЕ /start, обновляем/регистрируем пользователя с актуальным ником
             if not is_start_command:
-                user_registry.add_user(user_id)
+                user_registry.add_user(user_id=user_id, username=username)
 
         return await handler(event, data)
 

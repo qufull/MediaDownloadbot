@@ -86,25 +86,15 @@ class UserRegistry:
             logger.error(f"Ошибка при регистрации user_id={user_id}: {e}")
             return False
 
-    def get_all_users(self) -> list[int]:
-        """Возвращает ID всех пользователей бота."""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.execute("SELECT user_id FROM users")
-                return [row[0] for row in cursor.fetchall()]
-        except Exception as e:
-            logger.error(f"Ошибка получения всех юзеров: {e}")
-            return []
-
     def get_free_users(self) -> list[int]:
-        """Возвращает ID только бесплатных пользователей (у кого нет Premium или он истек)."""
+        """Возвращает ID только активных бесплатных пользователей (у кого нет Premium или он истек)."""
         import time
         current_time = int(time.time())
         try:
             with self._get_connection() as conn:
-                # Берем тех, у кого is_premium = 0 ИЛИ время подписки уже вышло
+                # Добавлено условие is_active = 1
                 cursor = conn.execute(
-                    "SELECT user_id FROM users WHERE is_premium = 0 OR (premium_expires > 0 AND premium_expires < ?)",
+                    "SELECT user_id FROM users WHERE is_active = 1 AND (is_premium = 0 OR (premium_expires > 0 AND premium_expires < ?))",
                     (current_time,)
                 )
                 return [row[0] for row in cursor.fetchall()]
@@ -187,3 +177,167 @@ class UserRegistry:
                 return cursor.fetchone()[0]
         except Exception:
             return 0
+
+    def get_premium_users(self) -> List[int]:
+        """Возвращает ID активных пользователей с действующей Premium-подпиской."""
+        import time
+        current_time = int(time.time())
+        try:
+            with self._get_connection() as conn:
+                # Берем активных юзеров, у которых стоит флаг премиума
+                # И время подписки либо бесконечно (0), либо еще не вышло
+                cursor = conn.execute(
+                    """
+                    SELECT user_id
+                    FROM users
+                    WHERE is_active = 1
+                      AND is_premium = 1
+                      AND (premium_expires = 0 OR premium_expires > ?)
+                    """,
+                    (current_time,)
+                )
+                return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Ошибка получения премиум юзеров: {e}")
+            return []
+
+    def set_premium_all(self, days: int = 1):
+        """Выдает премиум (добавляет дни) ВСЕМ активным пользователям, учитывая их текущий остаток."""
+        import time
+        current_time = int(time.time())
+        time_to_add = days * 24 * 60 * 60
+
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET is_premium      = 1,
+                        premium_expires = CASE
+                            -- 1. Если у пользователя вечный премиум (0), оставляем 0
+                                              WHEN is_premium = 1 AND premium_expires = 0 THEN 0
+
+                            -- 2. Если премиум сейчас активен, плюсуем новые дни к его текущей дате окончания
+                                              WHEN is_premium = 1 AND premium_expires > ? THEN premium_expires + ?
+
+                            -- 3. Если премиума нет или он уже истек, выдаем дни начиная с текущей секунды
+                                              ELSE ? + ?
+                            END
+                    WHERE is_active = 1
+                    """,
+                    (current_time, time_to_add, current_time, time_to_add)
+                )
+        except Exception as e:
+            logger.error(f"Ошибка массовой выдачи премиума: {e}")
+
+    def get_all_users_for_sheet(self) -> list:
+        """Получает список ВСЕХ пользователей для выгрузки (без статуса)."""
+        from datetime import datetime
+        import time
+        current_time = int(time.time())
+
+        try:
+            with self._get_connection() as conn:
+                # Достаем всех юзеров (is_active нам больше не нужен для вывода)
+                cursor = conn.execute(
+                    """
+                    SELECT user_id, username, is_premium, premium_expires
+                    FROM users
+                    """
+                )
+
+                sheet_data = []
+                for row in cursor.fetchall():
+                    user_id, username, is_premium, expires = row
+
+                    username_str = f"@{username}" if username else "Без юзернейма"
+
+                    # Проверяем, действует ли премиум прямо сейчас
+                    is_really_premium = False
+                    if is_premium == 1 and (expires == 0 or expires > current_time):
+                        is_really_premium = True
+
+                    # Формируем данные в зависимости от наличия премиума
+                    if is_really_premium:
+                        if expires == 0:
+                            sub_time = "2099-12-31"  # Бесконечный премиум
+                        else:
+                            sub_time = datetime.fromtimestamp(expires).strftime('%Y-%m-%d')
+                    else:
+                        sub_time = "Нет" # У пользователя нет премиума
+
+                    # Формат колонок: [ID, Username, Expiry Date] (Теперь их 3)
+                    sheet_data.append([user_id, username_str, sub_time])
+
+                return sheet_data
+        except Exception as e:
+            logger.error(f"Ошибка выгрузки для таблицы: {e}")
+            return []
+
+    def update_premium_from_sheet(self, user_id: int, expiry_date_str: str):
+        """Обновляет статус премиума: если дата валидна — ставит её, если 'Нет' — снимает."""
+        from datetime import datetime
+
+        try:
+            # Очищаем строку от лишних пробелов
+            expiry_date_str = str(expiry_date_str).strip()
+
+            # Если в таблице написано "Нет" или пусто, выключаем премиум
+            if expiry_date_str.lower() in ["нет", "none", "", "-"]:
+                with self._get_connection() as conn:
+                    conn.execute(
+                        "UPDATE users SET is_premium = 0, premium_expires = 0 WHERE user_id = ?",
+                        (user_id,)
+                    )
+                return "премиум снят"
+
+            # Иначе пытаемся превратить строку в дату (формат YYYY-MM-DD)
+            dt = datetime.strptime(f"{expiry_date_str} 23:59:59", "%Y-%m-%d %H:%M:%S")
+            new_expires = int(dt.timestamp())
+
+            with self._get_connection() as conn:
+                conn.execute(
+                    "UPDATE users SET is_premium = 1, premium_expires = ? WHERE user_id = ?",
+                    (new_expires, user_id)
+                )
+            return f"премиум установлен до {expiry_date_str}"
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления из таблицы для {user_id}: {e}")
+            raise e
+
+    def get_user_id_by_username(self, username: str):
+        """Возвращает ID пользователя по его юзернейму (с @ или без)."""
+        clean_username = username.replace('@', '').strip()
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute("SELECT user_id FROM users WHERE username = ?", (clean_username,))
+                row = cursor.fetchone()
+                return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Ошибка поиска по юзернейму: {e}")
+            return None
+
+    def get_premium_status(self, user_id: int):
+        """Возвращает статус премиума и дату окончания: (is_premium: bool, expires: int)"""
+        import time
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute("SELECT is_premium, premium_expires FROM users WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+
+                if row:
+                    is_premium, expires = row
+                    if is_premium == 1:
+                        # Если время еще не вышло или прем бесконечный (0)
+                        if expires == 0 or expires > int(time.time()):
+                            return True, expires
+                        else:
+                            # Время вышло - снимаем премиум
+                            conn.execute("UPDATE users SET is_premium = 0, premium_expires = 0 WHERE user_id = ?",
+                                         (user_id,))
+                            return False, 0
+                return False, 0
+        except Exception as e:
+            logger.error(f"Ошибка получения статуса премиума для {user_id}: {e}")
+            return False, 0

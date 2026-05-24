@@ -1,9 +1,11 @@
+import datetime
 import logging
 import hmac
 import hashlib
 import json
-from fastapi import FastAPI, Request, HTTPException
-from src.config import user_registry, bot
+from fastapi import FastAPI, Request, HTTPException,Header
+from src.config import user_registry, bot, settings
+from pydantic import BaseModel
 
 logger = logging.getLogger("webhook_server")
 app = FastAPI()
@@ -98,3 +100,76 @@ async def tribute_webhook(request: Request):
 
     # Возвращаем 200 OK, чтобы Tribute понял, что мы приняли запрос
     return {"status": "ok"}
+
+
+API_KEY = "rAdi8YYvr54ghTjv97TTZxQ1BSwpELkjfgj9Ft07TDC0BJIY4l73L8n0oanRIHzMX7p5aP4NHVlzkQOoabOmduek3c2NMQT10zpAPgINSAI9zf5UaNHrHSZ5Iuxqgqhr"
+
+
+# Схема для получения данных об обновлении
+class ClientUpdate(BaseModel):
+    user_id: int
+    name: str
+    sub_time: str
+
+
+def verify_api_key(x_api_key: str):
+    """Проверка ключа доступа."""
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Неверный API ключ")
+
+
+@app.get("/media/clients")
+async def get_clients(x_api_key: str = Header(None)):
+    """Вебхук для выгрузки данных в таблицу."""
+    verify_api_key(x_api_key)
+
+    # Получаем данные ВСЕХ пользователей из БД в виде готовых строк
+    data = user_registry.get_all_users_for_sheet()
+
+    # Отдаем JSON, который Google Script сразу сможет разобрать в массив
+    return data
+
+@app.post("/media/update_client")
+async def update_client(payload: ClientUpdate, x_api_key: str = Header(None)):
+    """Вебхук для приема обновлений из таблицы (для всех типов юзеров)."""
+    verify_api_key(x_api_key)
+
+    try:
+        # 1. Обновляем данные в базе
+        user_registry.update_premium_from_sheet(
+            user_id=payload.user_id,
+            expiry_date_str=payload.sub_time
+        )
+
+        # 2. Форматируем дату для красивого сообщения
+        sub_time_str = str(payload.sub_time).strip()
+        if sub_time_str.lower() in ["нет", "none", "", "-"]:
+            formatted_date = "Нет"
+        else:
+            try:
+                # Переводим из YYYY-MM-DD в DD.MM.YYYY
+                from datetime import datetime
+                dt = datetime.strptime(sub_time_str, "%Y-%m-%d")
+                formatted_date = dt.strftime("%d.%m.%Y")
+            except ValueError:
+                # На случай, если пришел другой формат
+                formatted_date = sub_time_str
+
+        # 3. Формируем нужный тебе текст
+        admin_text = (
+            f"✅ Данные изменены для пользователя <b>{payload.name}</b>\n"
+            f"Дата: <b>{formatted_date}</b>"
+        )
+
+        # 4. Рассылаем админам
+        for admin_id in settings.telegram.admin_ids:
+            try:
+                await bot.send_message(chat_id=admin_id, text=admin_text, parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
+
+        return {"status": "success", "message": "Данные успешно обновлены"}
+
+    except Exception as e:
+        logger.error(f"Ошибка API при обновлении: {e}")
+        raise HTTPException(status_code=400, detail="Ошибка формата данных")
