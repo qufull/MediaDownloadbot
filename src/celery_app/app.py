@@ -28,8 +28,9 @@ celery_app.conf.update(
     task_track_started=True,
 
     # лимиты, чтобы не висеть вечно (подстрой под свою реальность)
-    task_soft_time_limit=60 * 20,  # 20 минут
-    task_time_limit=60 * 25,
+    task_soft_time_limit=270,  # 20 минут
+    task_time_limit=300,
+    worker_max_tasks_per_child=50,
 
     task_routes={
         # Очередь для извлечения информации

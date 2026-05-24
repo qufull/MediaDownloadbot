@@ -1,86 +1,221 @@
 services:
   redis:
-      image: redis:7-alpine
-      restart: unless-stopped
-      container_name: media-bot-redis
-      ports:
-        - "${REDIS_PORT:-6379}:6379"
-      volumes:
-        - redis_data:/data
-      command: redis-server --appendonly yes
-      healthcheck:
-        test: [ "CMD", "redis-cli", "ping" ]
-        interval: 10s
-        timeout: 5s
-        retries: 3
-        start_period: 5s
+    image: redis:7-alpine
+    restart: unless-stopped
+    container_name: media-bot-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   telegram-bot-api:
-      image: aiogram/telegram-bot-api:latest
-      restart: unless-stopped
-      container_name: media-bot-telegram-bot-api
-      ports:
-        - "${TELEGRAM_HTTP_PORT:-8081}:8081"
-      environment:
-        TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
-        TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
-      volumes:
-        - media_storage:/app/src/storage/downloads:ro
-      command:
-        - "--local"
-        - "--api-id=${TELEGRAM_API_ID}"
-        - "--api-hash=${TELEGRAM_API_HASH}"
-        - "--http-port=8081"
-        - "--dir=/tmp/telegram-bot-api"
-        - "--temp-dir=/tmp"
-        - "--username=root"
-        - "--groupname=root"
-        - "--verbose"
+    image: aiogram/telegram-bot-api:latest
+    restart: unless-stopped
+    container_name: media-bot-telegram-bot-api
+    ports:
+      - "${TELEGRAM_HTTP_PORT:-8081}:8081"
+    environment:
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
+      TELEGRAM_LOCAL: "true"
+    volumes:
+      - telegram_bot_api_data:/var/lib/telegram-bot-api
+      - media_storage:/app/src/storage/downloads:ro
 
+  # ─── Telegram бот (aiogram polling / webhook) ───────────────────────────────
   bot:
-      build: .
-      restart: unless-stopped
-      container_name: media-bot
-      ports:
-        - "8000:8000"
-      env_file:
-        - .env
-      volumes:
-        - media_storage:/app/src/storage/downloads
-        - user_data:/app/data
-        - ./cookies:/app/cookies
-      environment:
-        BOT_SERVER_URL: "http://telegram-bot-api:${TELEGRAM_HTTP_PORT:-8081}"
-      deploy:
-        resources:
-          limits:
-            memory: 3000M
-      command: [ "sh", "-c",
-        "uv run uvicorn src.webhook_server:app --host 0.0.0.0 --port 8000 & \
-         uv run python -m celery -A src.celery_app.app:celery_app worker -Q download_audio_queue,extract_queue,download_youtube_queue,download_rutube_queue,download_reddit_queue,download_tiktok_queue,download_twitter_queue,download_instagram_queue,download_vk_queue,download_pinterest_queue,cleanup_queue -n worker@%h -c 100 -P gevent --loglevel=warning & \
-         uv run python -m celery -A src.celery_app.app:celery_app beat --loglevel=warning --pidfile=celerybeat.pid & \
-         uv run python main.py"
-      ]
-      depends_on:
-        redis:
-          condition: service_healthy
-        telegram-bot-api:
-          condition: service_started
+    build: .
+    restart: unless-stopped
+    container_name: media-bot
+    env_file:
+      - .env
+    volumes:
+      - media_storage:/app/src/storage/downloads
+      - user_data:/app/data
+      - ./cookies:/app/cookies
+    environment:
+      BOT_SERVER_URL: "http://telegram-bot-api:${TELEGRAM_HTTP_PORT:-8081}"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    command: ["uv", "run", "python", "main.py"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      telegram-bot-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis, os; r=redis.from_url(os.environ['REDIS_URL']); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
+  # ─── Webhook сервер (FastAPI / uvicorn) ─────────────────────────────────────
+  webhook:
+    build: .
+    restart: unless-stopped
+    container_name: media-bot-webhook
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - media_storage:/app/src/storage/downloads
+      - user_data:/app/data
+      - ./cookies:/app/cookies
+    environment:
+      BOT_SERVER_URL: "http://telegram-bot-api:${TELEGRAM_HTTP_PORT:-8081}"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    command: ["uv", "run", "uvicorn", "src.webhook_server:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─── Celery beat (планировщик) ───────────────────────────────────────────────
+  celery-beat:
+    build: .
+    restart: unless-stopped
+    container_name: media-bot-celery-beat
+    env_file:
+      - .env
+    volumes:
+      - user_data:/app/data
+      - ./cookies:/app/cookies
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    command:
+      - "uv"
+      - "run"
+      - "python"
+      - "-m"
+      - "celery"
+      - "-A"
+      - "src.celery_app.app:celery_app"
+      - "beat"
+      - "--loglevel=warning"
+      - "--pidfile=/tmp/celerybeat.pid"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ─── Celery worker: скачивание видео (тяжёлые задачи) ───────────────────────
+  # Очереди: YouTube, RuTube, TikTok, Instagram, Reddit, Twitter, VK, Pinterest
+  # -c 20 — 20 greenlet'ов достаточно для IO-bound загрузок при 1.5 GB памяти
+  celery-worker-download:
+    build: .
+    restart: unless-stopped
+    container_name: media-bot-worker-download
+    env_file:
+      - .env
+    volumes:
+      - media_storage:/app/src/storage/downloads
+      - ./cookies:/app/cookies
+    deploy:
+      resources:
+        limits:
+          memory: 1500M
+    command:
+      - "uv"
+      - "run"
+      - "python"
+      - "-m"
+      - "celery"
+      - "-A"
+      - "src.celery_app.app:celery_app"
+      - "worker"
+      - "-Q"
+      - "download_youtube_queue,download_rutube_queue,download_tiktok_queue,download_instagram_queue,download_reddit_queue,download_twitter_queue,download_vk_queue,download_pinterest_queue,download_audio_queue"
+      - "-n"
+      - "worker-download@%h"
+      - "-c"
+      - "20"
+      - "-P"
+      - "gevent"
+      - "--loglevel=warning"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "uv", "run", "python", "-m", "celery", "-A", "src.celery_app.app:celery_app", "inspect", "ping", "-d", "worker-download@media-bot-worker-download"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 20s
+
+  # ─── Celery worker: лёгкие задачи (extract + cleanup) ───────────────────────
+  # Отдельный воркер чтобы очистка и извлечение метаданных не блокировались
+  # тяжёлыми загрузками
+  celery-worker-utils:
+    build: .
+    restart: unless-stopped
+    container_name: media-bot-worker-utils
+    env_file:
+      - .env
+    volumes:
+      - media_storage:/app/src/storage/downloads
+      - ./cookies:/app/cookies
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    command:
+      - "uv"
+      - "run"
+      - "python"
+      - "-m"
+      - "celery"
+      - "-A"
+      - "src.celery_app.app:celery_app"
+      - "worker"
+      - "-Q"
+      - "extract_queue,cleanup_queue"
+      - "-n"
+      - "worker-utils@%h"
+      - "-c"
+      - "20"
+      - "-P"
+      - "gevent"
+      - "--loglevel=warning"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ─── Cookie refresher (запускается вручную: docker compose --profile refresh up) ──
   cookie-refresher:
-      build:
-        context: ./cookie_refresher
-        dockerfile: Dockerfile
-      container_name: cookie-refresher
-      profiles:
-        - refresh
-      volumes:
-        - ./cookies:/app/cookies
-      environment:
-        - REFRESH_SITES=vk
-      restart: "no"
+    build:
+      context: ./cookie_refresher
+      dockerfile: Dockerfile
+    container_name: cookie-refresher
+    profiles:
+      - refresh
+    volumes:
+      - ./cookies:/app/cookies
+    environment:
+      - REFRESH_SITES=vk
+    restart: "no"
 
 volumes:
   redis_data:
   media_storage:
   user_data:
+  telegram_bot_api_data:
