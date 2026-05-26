@@ -33,7 +33,9 @@ from src.core import (
     InstagramExtractor,
     TwitterExtractor,
     VKExtractor,
-    PinterestExtractor
+    PinterestExtractor,
+    FacebookExtractor,
+    LikeeExtractor,
 )
 
 
@@ -93,6 +95,14 @@ vk_extractor = VKExtractor(
     cookie_path=settings.local_storage.browser_cookie_path,
 )
 pinterest_extractor = PinterestExtractor(
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+
+facebook_extractor = FacebookExtractor(
+    cookie_path=settings.local_storage.browser_cookie_path,
+)
+
+likee_extractor = LikeeExtractor(
     cookie_path=settings.local_storage.browser_cookie_path,
 )
 

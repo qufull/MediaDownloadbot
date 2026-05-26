@@ -9,7 +9,8 @@ async def send_vpn_ad(chat_id: int) -> None:
     vpn_url = "https://t.me/vpnskynetai_bot?start=318875085"  # Твоя ссылка
 
     text = (
-        f"💙 Подключись к <a href='https://t.me/vpnskynetai_bot?start=318875085'>Skynet VPN</a> и используй Premium функции бесплатно.\n"
+        f"💙 Подключись к <a href='https://t.me/vpnskynetai_bot?start=refeZYFehrQ'>Skynet VPN</a> и используй Загрузчик видео Premium функции бесплатно.\n\n"
+        f"🎁 Бонус +100₽ при первом пополнении от 100₽\n"
         "<blockquote>"
         "🏳️ Обход глушилок ❞\n"
         "🌍 Разные локации\n"

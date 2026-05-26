@@ -88,6 +88,20 @@ class DomainMatcher:
             "pin.it",
             "www.pin.it",
         ],
+        ServiceType.FACEBOOK: [
+            "facebook.com",
+            "www.facebook.com",
+            "m.facebook.com",
+            "web.facebook.com",
+            "fb.com",
+            "fb.watch",
+        ],
+        ServiceType.LIKEE: [
+            "likee.video",
+            "l.likee.video",
+            "likee.com",
+            "www.likee.video",
+        ],
     }
 
     # Приоритетные домены для точного сопоставления
@@ -102,6 +116,9 @@ class DomainMatcher:
         "vk.com": ServiceType.VK,
         "vkvideo.ru": ServiceType.VK,
         "pin.it": ServiceType.PINTEREST,
+        "fb.watch": ServiceType.FACEBOOK,
+        "fb.com": ServiceType.FACEBOOK,
+        "l.likee.video": ServiceType.LIKEE,
     }
 
     # Эвристические правила для частичного сопоставления
@@ -119,6 +136,10 @@ class DomainMatcher:
         "vkvideo": ServiceType.VK,
         'pinterest': ServiceType.PINTEREST,
         'pin.it': ServiceType.PINTEREST,
+        'facebook': ServiceType.FACEBOOK,
+        'fb.watch': ServiceType.FACEBOOK,
+        'fb.com': ServiceType.FACEBOOK,
+        'likee': ServiceType.LIKEE,
     }
 
     @classmethod

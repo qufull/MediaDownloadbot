@@ -93,6 +93,13 @@ from .extractors.twitter import (
 from .extractors.vk import (
     VKExtractor
 )
+from .extractors.facebook import (
+    FacebookExtractor
+)
+from .extractors.likee import (
+    LikeeExtractor
+)
+
 
 
 __all__ = [
@@ -189,6 +196,8 @@ __all__ = [
 
     # VK компоненты
     "VKExtractor",
+    "FacebookExtractor",
+    "LikeeExtractor",
 ]
 
 

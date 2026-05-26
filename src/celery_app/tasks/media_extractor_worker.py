@@ -1,121 +1,162 @@
-# src/celery_app/tasks/extract.py
+# src/celery_app/tasks/media_extractor_worker.py
+import asyncio
 import logging
 from typing import List
-from src.celery_app.app import shared_loop
+
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
 
-from src.config import bot, user_registry
-from src.config import settings
+from src.celery_app.app import shared_loop
+from src.config import bot, user_registry, settings
+from src.config import (
+    user_activity_queue,
+    media_cache_storage,
+    user_session_storage,
+    file_id_cache,
+)
 from src.core import ResultDictAnnotation, AbstractErrorCodeModel
-from src.config import user_activity_queue, media_cache_storage, user_session_storage, file_id_cache
+from src.databases.user_activity_queue import MAX_QUEUE_SIZE
 
 from ..app import celery_app
 from .texts import MessageTemplates
 from .common import MediaProcessor, create_keyboard_layout, get_extractor, get_inline_keyboard
 from src.utils.telegram_anim import send_error
-import asyncio
 
 logger = logging.getLogger(__name__)
 
 
-async def async_extract_info(chat_id: int, message_id: int, url: str, service: str) -> None:
-    logger.info(f"[async_extract_info] Запуск обработки: chat_id={chat_id}, url={url}, service={service}")
-    message_ids = [message_id]
+async def _process_one(chat_id: int, url: str, service: str, origin_message_id: int) -> None:
+    """Обработать одну ссылку: извлечь метаданные и отправить карточку."""
+    logger.info("[_process_one] chat_id=%s service=%s url=%s", chat_id, service, url)
+    message_ids = [origin_message_id]
 
     try:
-        if user_activity_queue.get_extract(chat_id=chat_id):
-            logger.warning(f"[async_extract_info] Уже выполняется операция для chat_id={chat_id}")
-            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            await bot.send_message(chat_id=chat_id, text=MessageTemplates.PROCESSING_MESSAGE)
-            return
-
-        user_activity_queue.create_extract(chat_id=chat_id, url=url, service=service)
-        logger.debug(f"[async_extract_info] Запись в очередь пользователя создана: {chat_id}")
-
         await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        message = await bot.send_message(chat_id=chat_id, text=MessageTemplates.RECEIVED_MESSAGE)
-        message_ids.append(message.message_id)
-        logger.debug(f"[async_extract_info] Отправлено сообщение о получении запроса: message_id={message.message_id}")
+        status_msg = await bot.send_message(chat_id=chat_id, text=MessageTemplates.RECEIVED_MESSAGE)
+        message_ids.append(status_msg.message_id)
 
         async with ChatActionSender(bot=bot, chat_id=chat_id, action=ChatAction.TYPING):
-            if media := media_cache_storage.get_media(url=url):
-                logger.info(f"[async_extract_info] Найдено медиа в кеше (url={url})")
-                response = ResultDictAnnotation(
-                    context=None,
-                    status="success",
-                    data=media["data"],
-                    code=AbstractErrorCodeModel.SUCCESS.value,
-                )
+            if cached := media_cache_storage.get_media(url=url):
+                logger.info("[_process_one] Кэш-хит для url=%s", url)
+                response = {
+                    "context": None,
+                    "status": "success",
+                    "data": cached["data"],
+                    "code": AbstractErrorCodeModel.SUCCESS.value,
+                }
             else:
-                logger.info(
-                    f"[async_extract_info] Медиа в кеше не найдено, извлечение через extractor (service={service})")
                 extractor = get_extractor(service=service)
                 response = extractor.extract_info(url=url).to_dict()
 
-            if response["status"] == "success":
-                logger.info(f"[async_extract_info] Извлечение успешно для chat_id={chat_id}")
-                await handle_success_response(
-                    url=url,
-                    chat_id=chat_id,
-                    service=service,
-                    response=response,
-                    message_ids=message_ids,
-                )
-
-            else:
-                logger.error(f"[async_extract_info] Ошибка при извлечении информации (code={response['code']})")
-                await handle_error_response(
-                    url=url,
-                    chat_id=chat_id,
-                    service=service,
-                    response=response,
-                    message_ids=message_ids,
-                )
+        if response["status"] == "success":
+            await _handle_success(
+                url=url, chat_id=chat_id, service=service,
+                response=response, message_ids=message_ids,
+            )
+        else:
+            await _handle_error(
+                url=url, chat_id=chat_id, service=service,
+                response=response, message_ids=message_ids,
+            )
 
     except Exception as e:
-        logger.exception(f"[async_extract_info] Исключение при обработке запроса: {e}")
+        logger.exception("[_process_one] Исключение chat_id=%s: %s", chat_id, e)
         await send_error(chat_id=chat_id, text=MessageTemplates.EXTRACT_ERROR.format(code="EXCEPTION"))
-    finally:
-        user_activity_queue.delete_extract(chat_id=chat_id)
-        logger.debug(f"[async_extract_info] Очередь пользователя очищена: chat_id={chat_id}")
 
 
-async def handle_success_response(
-        url: str,
-        chat_id: int,
-        service: str,
-        message_ids: List[int],
-        response: ResultDictAnnotation
+async def _drain_queue(chat_id: int) -> None:
+    """Последовательно обработать все ссылки в очереди пользователя."""
+    logger.info("[_drain_queue] Старт для chat_id=%s", chat_id)
+
+    while True:
+        item = user_activity_queue.pop_url(chat_id=chat_id)
+        if item is None:
+            break
+
+        url     = item["url"]
+        service = item["service"]
+        user_activity_queue.set_processing(chat_id=chat_id, url=url, service=service)
+
+        remaining = user_activity_queue.queue_size(chat_id=chat_id)
+        if remaining > 0:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=MessageTemplates.QUEUE_PROCESSING.format(position=1, remaining=remaining),
+            )
+
+        await _process_one(chat_id=chat_id, url=url, service=service, origin_message_id=0)
+
+    user_activity_queue.clear_processing(chat_id=chat_id)
+    logger.info("[_drain_queue] Очередь chat_id=%s исчерпана", chat_id)
+
+
+async def async_extract_info(chat_id: int, message_id: int, url: str, service: str) -> None:
+    """
+    Точка входа для Celery-задачи.
+
+    1. Добавляем ссылку в очередь (макс. MAX_QUEUE_SIZE).
+    2. Если очередь была пуста и нет активной обработки — запускаем дренаж.
+    3. Если уже идёт обработка — сообщаем позицию в очереди и выходим.
+    """
+    logger.info("[async_extract_info] chat_id=%s url=%s service=%s", chat_id, url, service)
+
+    was_processing = user_activity_queue.is_processing(chat_id=chat_id)
+    queue_before   = user_activity_queue.queue_size(chat_id=chat_id)
+
+    accepted = user_activity_queue.push_url(chat_id=chat_id, url=url, service=service)
+
+    if not accepted:
+        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=MessageTemplates.QUEUE_FULL.format(max_size=MAX_QUEUE_SIZE),
+        )
+        logger.warning("[async_extract_info] Очередь переполнена для chat_id=%s", chat_id)
+        return
+
+    queue_after = user_activity_queue.queue_size(chat_id=chat_id)
+
+    if was_processing or queue_before > 0:
+        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=MessageTemplates.QUEUE_ADDED.format(
+                position=queue_after,
+                max_size=MAX_QUEUE_SIZE,
+            ),
+        )
+        logger.info("[async_extract_info] URL в очередь позиция=%s chat_id=%s", queue_after, chat_id)
+        return
+
+    await _drain_queue(chat_id=chat_id)
+
+
+async def _handle_success(
+    url: str,
+    chat_id: int,
+    service: str,
+    message_ids: List[int],
+    response: dict,
 ) -> None:
-    logger.info(f"[handle_success_response] Обработка успешного результата: chat_id={chat_id}, service={service}")
-
+    logger.info("[_handle_success] chat_id=%s service=%s", chat_id, service)
     try:
         data = response["data"]
 
         user_session_storage.create_session(
-            url=url,
-            chat_id=chat_id,
-            service=service,
-            media_data=data,
+            url=url, chat_id=chat_id, service=service, media_data=data,
         )
-
         media_cache_storage.store_media(url=url, media_data=data)
-        logger.debug(f"[handle_success_response] Данные сохранены в сессии и кеше (chat_id={chat_id})")
 
-        # 🚀 Получаем закэшированные качества для этого URL
         cached_heights = file_id_cache.get_cached_qualities(url=url)
-        if cached_heights:
-            logger.info(f"[handle_success_response] Найдены закэшированные качества: {cached_heights}")
-
         buttons = []
         processor = MediaProcessor()
         preview_url = FSInputFile("src/assets/image_not_found.png")
-        is_user_premium = user_registry.is_user_premium(chat_id) or chat_id in settings.telegram.admin_ids
+        is_premium = user_registry.is_user_premium(chat_id) or chat_id in settings.telegram.admin_ids
 
-        # 🚀 Передаём cached_heights в parse_videos
-        if video_buttons := processor.parse_videos(data["videos"], cached_heights=cached_heights, service=service,is_premium=is_user_premium):
+        if video_buttons := processor.parse_videos(
+            data["videos"], cached_heights=cached_heights, service=service, is_premium=is_premium
+        ):
             buttons.extend(video_buttons)
 
         if audio_button := processor.parse_audios(data["audios"]):
@@ -129,22 +170,23 @@ async def handle_success_response(
             buttons.append(image_button)
             preview_url = image_button.url
 
-        logger.debug(f"[handle_success_response] Кнопок сформировано: {len(buttons)}")
-
-        keyboard_data = create_keyboard_layout(buttons=buttons)
+        keyboard_data   = create_keyboard_layout(buttons=buttons)
         inline_keyboard = get_inline_keyboard(data=keyboard_data)
+
         caption = MessageTemplates.EXTRACT_CAPTION.format(
             service=service,
             author_name=data["author_name"],
-            title=data["title"][:35],
+            title=(data["title"] or "")[:35],
             url=url,
             botname=settings.telegram.name,
         )
 
         try:
-            await bot.delete_messages(chat_id=chat_id, message_ids=message_ids)
+            ids_to_delete = [mid for mid in message_ids if mid != 0]
+            if ids_to_delete:
+                await bot.delete_messages(chat_id=chat_id, message_ids=ids_to_delete)
         except Exception as e:
-            logger.warning(f"[handle_success_response] Ошибка удаления сообщений: {e}")
+            logger.warning("[_handle_success] Ошибка удаления сообщений: %s", e)
 
         async with ChatActionSender(bot=bot, chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO):
             await bot.send_photo(
@@ -153,44 +195,40 @@ async def handle_success_response(
                 photo=preview_url,
                 reply_markup=inline_keyboard,
             )
-        logger.info(f"[handle_success_response] Медиа успешно отправлено пользователю chat_id={chat_id}")
+
+        remaining = user_activity_queue.queue_size(chat_id=chat_id)
+        if remaining > 0:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=MessageTemplates.QUEUE_NEXT.format(remaining=remaining),
+            )
 
     except Exception as e:
-        logger.exception(f"[handle_success_response] Ошибка при обработке успешного результата: {e}")
+        logger.exception("[_handle_success] Ошибка: %s", e)
         await send_error(chat_id=chat_id, text=MessageTemplates.EXTRACT_ERROR.format(code="SUCCESS_HANDLER_ERROR"))
 
 
-async def handle_error_response(
-        url: str,
-        service: str,
-        chat_id: int,
-        message_ids: List[int],
-        response: ResultDictAnnotation
+async def _handle_error(
+    url: str,
+    service: str,
+    chat_id: int,
+    message_ids: List[int],
+    response: dict,
 ) -> None:
-    logger.error(
-        f"[handle_error_response] Обработка ошибки: chat_id={chat_id}, code={response.get('code')}, service={service}"
-    )
+    logger.error("[_handle_error] chat_id=%s code=%s", chat_id, response.get("code"))
+    try:
+        ids_to_delete = [mid for mid in message_ids[1:] if mid != 0]
+        if ids_to_delete:
+            await bot.delete_messages(chat_id=chat_id, message_ids=ids_to_delete)
+    except Exception as e:
+        logger.warning("[_handle_error] Ошибка удаления сообщений: %s", e)
 
     try:
-        try:
-            if len(message_ids) > 1:
-                await bot.delete_messages(chat_id=chat_id, message_ids=message_ids[1:])
-        except Exception as e:
-            logger.warning(f"[handle_error_response] Ошибка удаления сообщений: {e}")
-
         extractor = get_extractor(service=service)
-        code = response.get("code")
-        code_text = extractor.get_error_description(code)
-
-        await send_error(
-            chat_id=chat_id,
-            text=MessageTemplates.EXTRACT_ERROR.format(code=code_text),
-        )
-
-        logger.info(f"[handle_error_response] Гифка ошибки отправлена пользователю chat_id={chat_id}")
-
+        code_text = extractor.get_error_description(response.get("code"))
+        await send_error(chat_id=chat_id, text=MessageTemplates.EXTRACT_ERROR.format(code=code_text))
     except Exception as e:
-        logger.exception(f"[handle_error_response] Ошибка при отправке гифки ошибки: {e}")
+        logger.exception("[_handle_error] Ошибка отправки: %s", e)
         try:
             await bot.send_message(
                 chat_id=chat_id,
@@ -202,18 +240,16 @@ async def handle_error_response(
 
 @celery_app.task(name="extract_info", queue="extract_queue")
 def extract_info(chat_id: int, message_id: int, url: str, service: str) -> None:
-    logger.info(f"[extract_info] Celery-задача запущена: chat_id={chat_id}, service={service}, url={url}")
+    logger.info("[extract_info] Celery-задача: chat_id=%s service=%s url=%s", chat_id, service, url)
     try:
         future = asyncio.run_coroutine_threadsafe(
             async_extract_info(
-                url=url,
-                service=service,
-                chat_id=chat_id,
-                message_id=message_id,
+                url=url, service=service,
+                chat_id=chat_id, message_id=message_id,
             ),
-            shared_loop
+            shared_loop,
         )
         future.result()
-        logger.info(f"[extract_info] Celery-задача завершена успешно: chat_id={chat_id}")
+        logger.info("[extract_info] Celery-задача завершена: chat_id=%s", chat_id)
     except Exception as e:
-        logger.exception(f"[extract_info] Ошибка выполнения celery-задачи: {e}")
+        logger.exception("[extract_info] Ошибка выполнения: %s", e)

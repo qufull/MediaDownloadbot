@@ -214,9 +214,19 @@ async def handle_video(callback: CallbackQuery, state: FSMContext) -> AnswerCall
         if service in ["youtube", "rutube", "vk"] and quality >= 720:
             if not is_premium and not is_admin:
                 promo_text = (
-                    f"⭐️ Высокое качество (720p и выше) доступно только по Premium-подписке!\n\n"
-                    "🔥 PREMIUM: 720p/1080p, Без рекламы, Приоритет\n"
-                    "🆓 FREE: ≤ 640p\n"
+                    "⭐️ <b>Высокое качество (720p и выше) доступно только по Premium-подписке!</b>\n\n"
+                    "🔥 <b>PREMIUM:</b> 1080p/720p, без рекламы, приоритет в загрузке\n"
+                    "🆓 <b>FREE:</b> Качество ≤ 640p, реклама, очередь\n\n"
+                    "Подключи <a href=\"https://t.me/vpnskynetai_bot?start=refeZYFehrQ\">SkyNet VPN</a> "
+                    "и используй Premium бесплатно.\n"
+                    "<i>(После покупки VPN необходимо написать в поддержку)</i>\n\n"
+                    "<blockquote>"
+                    "🏳️ Обход белых списков\n"
+                    "🌍 9 разных стран / до 8 устройств\n"
+                    "📹 Youtube в режиме \"окно в окне\"\n"
+                    "🎁 Proxy Telegram + Canva Pro в подарок\n"
+                    "⚡️ Высокая скорость без урезаний"
+                    "</blockquote>"
                 )
                 await callback.message.answer(
                     promo_text, reply_markup=get_tribute_payment_keyboard(), parse_mode="HTML"

@@ -44,6 +44,12 @@ class ServiceType(Enum):
     PINTEREST = "pinterest"
     """Pinterest - визуальная социальная сеть."""
 
+    FACEBOOK = "facebook"
+    """Facebook - социальная сеть."""
+
+    LIKEE = "likee"
+    """Likee - платформа для коротких видео."""
+
     UNSUPPORTED = "unsupported"
     """Неподдерживаемый сервис."""
 

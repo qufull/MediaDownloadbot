@@ -24,6 +24,8 @@ from src.config import (
     twitter_extractor,
     vk_extractor,
     pinterest_extractor,
+    facebook_extractor,
+    likee_extractor,
 )
 
 
@@ -264,6 +266,8 @@ def get_extractor(service: str) -> AbstractExtractor:
         "twitter": twitter_extractor,
         "vk": vk_extractor,
         "pinterest": pinterest_extractor,
+        "facebook": facebook_extractor,
+        "likee": likee_extractor,
     }
 
     if service not in extractors:

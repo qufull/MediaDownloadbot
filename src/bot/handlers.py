@@ -594,7 +594,7 @@ async def handle_donate(message: Message) -> SendMessage:
     )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Купить подписку", url="https://t.me/skynetaivpn_bot")],
+        [InlineKeyboardButton(text="🛒 Купить подписку", url="https://t.me/vpnskynetai_bot?start=refeZYFehrQ")],
     ])
 
     await message.answer(text=donate_text, reply_markup=keyboard)

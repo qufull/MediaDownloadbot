@@ -499,6 +499,10 @@ def download_dailymotion_video(url, width, height, chat_id, video_id, message_id
     _run_video_task("dailymotion", url, width, height, chat_id, video_id, message_id, merge_audio)
 
 
+@celery_app.task(name="download_likee_video", queue="download_generic_queue")
+def download_likee_video(url, width, height, chat_id, video_id, message_id, merge_audio):
+    _run_video_task("likee", url, width, height, chat_id, video_id, message_id, merge_audio)
+
 @celery_app.task(name="download_facebook_video", queue="download_generic_queue")
 def download_facebook_video(url, width, height, chat_id, video_id, message_id, merge_audio):
     _run_video_task("facebook", url, width, height, chat_id, video_id, message_id, merge_audio)

@@ -22,7 +22,7 @@ class MessageTemplates:
     PRODUCTS = (
         "🎪 <b>Добро пожаловать в нашу цифровую семью!</b>\n\n"
         "✨ <b><a href=\"https://t.me/Skynet_download_bot\">SkyNet Download Bot</a></b> - ваш личный загрузчик контента\n"
-        "🛡️ <b><a href=\"https://t.me/vpnskynetai_bot\">SkyNet VPN</a></b> - свобода интернета без границ\n"
+        "🛡️ <b><a href=\"https://t.me/vpnskynetai_bot?start=refeZYFehrQ\">SkyNet VPN</a></b> - свобода интернета без границ\n"
     )
 
     WELCOME = (
@@ -41,8 +41,10 @@ class MessageTemplates:
         "• TikTok\n"
         "• X (Twitter)\n"
         "• VK\n"
-        "• Pinterest\n\n"
-        "Подключи <a href=\"https://t.me/vpnskynetai_bot\">SkyNet VPN</a> — и получи полный доступ к Premium-функциям медиа-бота без доплат.\n"
+        "• Pinterest\n"
+        "• Facebook\n"
+        "• Likee\n\n"
+        "Подключи <a href=\"https://t.me/vpnskynetai_bot?start=refeZYFehrQ\">SkyNet VPN</a> — и получи полный доступ к Premium-функциям медиа-бота без доплат.\n"
         "Внутри уже включено: Telegram-proxy + Canva Pro."
     )
 

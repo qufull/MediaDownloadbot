@@ -66,12 +66,17 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
 
 
 def get_tribute_payment_keyboard() -> InlineKeyboardMarkup:
-
     builder = InlineKeyboardBuilder()
-    builder.add(
+    builder.row(
         InlineKeyboardButton(
             text="⭐️ Купить Premium",
             url="https://t.me/tribute/app?startapp=psMq"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="🛡 Подключить SkyNet VPN + Premium",
+            url="https://t.me/vpnskynetai_bot?start=refeZYFehrQ"
         )
     )
     return builder.as_markup()
